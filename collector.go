@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,6 +24,7 @@ type Collector struct {
 	clusters     prometheus.Gauge
 	risks        *prometheus.GaugeVec
 	risksActive  *prometheus.GaugeVec
+	risksByCheck *prometheus.GaugeVec
 	issuesOpen   *prometheus.GaugeVec
 	issuesClosed *prometheus.CounterVec
 	stepDuration *prometheus.HistogramVec
@@ -39,10 +42,11 @@ func NewCollector(api *Client, interval time.Duration, reg prometheus.Registerer
 	}
 	c := &Collector{
 		api: api, interval: interval, seenClosed: map[string]time.Time{}, firstIssues: true,
-		clusters:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_clusters", Help: "Clusters connected to Komodor."}),
-		risks:       f("reliability_risks", "Reliability risks by status and severity.", "status", "severity"),
-		risksActive: f("reliability_risks_active", "Open and confirmed reliability risks by cluster, check and severity.", "cluster", "check_type", "severity"),
-		issuesOpen:  f("issues_open", "Open issues by cluster and type (issues older than 2 days are not seen).", "cluster", "type"),
+		clusters:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_clusters", Help: "Clusters connected to Komodor."}),
+		risks:        f("reliability_risks", "Reliability risks by status and severity.", "status", "severity"),
+		risksActive:  f("reliability_risks_active", "Open and confirmed reliability risks by cluster and severity.", "cluster", "severity"),
+		risksByCheck: f("reliability_risks_by_check", "Open and confirmed reliability risks by check type.", "check_type"),
+		issuesOpen:   f("issues_open", "Open issues by cluster and type (issues older than 2 days are not seen).", "cluster", "type"),
 		issuesClosed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "komodor_issues_closed_total", Help: "Issues observed closing since the exporter started."}, []string{"cluster", "type"}),
 		stepDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -51,7 +55,7 @@ func NewCollector(api *Client, interval time.Duration, reg prometheus.Registerer
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "komodor_exporter_errors_total", Help: "Failed collection attempts."}),
 		lastSuccess:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_success_timestamp_seconds", Help: "Unix time of the last fully successful collection."}),
 	}
-	reg.MustRegister(c.clusters, c.risks, c.risksActive, c.issuesOpen, c.issuesClosed, c.stepDuration, c.scrapeErrors, c.lastSuccess)
+	reg.MustRegister(c.clusters, c.risks, c.risksActive, c.risksByCheck, c.issuesOpen, c.issuesClosed, c.stepDuration, c.scrapeErrors, c.lastSuccess)
 	return c
 }
 
@@ -79,8 +83,25 @@ func (c *Collector) Run(ctx context.Context) {
 	}
 }
 
-// collect fills fresh gauges and only swaps them in per family once that family fully succeeds,
-// so a failed poll keeps the previous values instead of reporting zeros.
+var activeStatuses = []string{"open", "confirmed"}
+
+// fanout runs fn for 0..n-1 concurrently; the client's semaphore bounds the real API concurrency.
+func fanout(n int, fn func(i int) error) error {
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = fn(i)
+		}()
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// collect runs the independent steps concurrently once the cluster list is known. A step publishes
+// only when it fully succeeds, so a failed step keeps its previous values instead of reporting zeros.
 func (c *Collector) collect(ctx context.Context) error {
 	stepStart := time.Now()
 	clusters, err := c.api.Clusters(ctx)
@@ -91,89 +112,113 @@ func (c *Collector) collect(ctx context.Context) error {
 	c.clusters.Set(float64(len(clusters)))
 	slog.Debug("collected clusters", "count", len(clusters))
 
-	var firstErr error
-	step := func(name string, fn func(context.Context) error) {
-		start := time.Now()
-		err := fn(ctx)
-		c.stepDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
-		slog.Debug("collection step done", "step", name, "duration", time.Since(start).String())
-		if err != nil {
-			slog.Error("collect step failed", "step", name, "err", err)
-			if firstErr == nil {
-				firstErr = fmt.Errorf("%s: %w", name, err)
-			}
-		}
+	steps := []struct {
+		name string
+		fn   func(context.Context) error
+	}{
+		{"risk_counts", c.collectRiskCounts},
+		{"active_risks", func(ctx context.Context) error { return c.collectActiveRisks(ctx, clusters) }},
+		{"risks_by_check", c.collectRisksByCheck},
+		{"issues", func(ctx context.Context) error { return c.collectIssues(ctx, clusters) }},
 	}
-	step("risk_counts", c.collectRiskCounts)
-	step("active_risks", c.collectActiveRisks)
-	step("issues", func(ctx context.Context) error { return c.collectIssues(ctx, clusters) })
-	return firstErr
+	return fanout(len(steps), func(i int) error {
+		s := steps[i]
+		start := time.Now()
+		err := s.fn(ctx)
+		c.stepDuration.WithLabelValues(s.name).Observe(time.Since(start).Seconds())
+		slog.Debug("collection step done", "step", s.name, "duration", time.Since(start).String(), "ok", err == nil)
+		if err != nil {
+			return fmt.Errorf("%s: %w", s.name, err)
+		}
+		return nil
+	})
 }
 
 func (c *Collector) collectRiskCounts(ctx context.Context) error {
-	type kv struct {
-		s, sev string
-		n      int
+	n := len(riskStatuses) * len(riskSeverities)
+	counts := make([]int, n)
+	err := fanout(n, func(i int) (err error) {
+		counts[i], err = c.api.RiskCount(ctx, RiskFilter{
+			Statuses: []string{riskStatuses[i/len(riskSeverities)]}, Severity: riskSeverities[i%len(riskSeverities)]})
+		return err
+	})
+	if err != nil {
+		return err
 	}
-	var res []kv
-	for _, s := range riskStatuses {
-		for _, sev := range riskSeverities {
-			n, err := c.api.RiskCount(ctx, s, sev)
-			if err != nil {
-				return err
-			}
-			res = append(res, kv{s, sev, n})
-		}
-	}
-	for _, r := range res {
-		c.risks.WithLabelValues(r.s, r.sev).Set(float64(r.n))
+	for i, v := range counts {
+		c.risks.WithLabelValues(riskStatuses[i/len(riskSeverities)], riskSeverities[i%len(riskSeverities)]).Set(float64(v))
 	}
 	return nil
 }
 
-func (c *Collector) collectActiveRisks(ctx context.Context) error {
-	type key struct{ cluster, check, sev string }
-	counts := map[key]float64{}
-	for _, s := range []string{"open", "confirmed"} {
-		rs, err := c.api.Risks(ctx, s)
-		if err != nil {
-			return err
-		}
-		for _, r := range rs {
-			counts[key{r.ClusterName, r.CheckType, r.Severity}]++
-		}
+func (c *Collector) collectActiveRisks(ctx context.Context, clusters []string) error {
+	n := len(clusters) * len(riskSeverities)
+	counts := make([]int, n)
+	err := fanout(n, func(i int) (err error) {
+		counts[i], err = c.api.RiskCount(ctx, RiskFilter{
+			Statuses: activeStatuses, Cluster: clusters[i/len(riskSeverities)], Severity: riskSeverities[i%len(riskSeverities)]})
+		return err
+	})
+	if err != nil {
+		return err
 	}
-	slog.Debug("collected active risks", "series", len(counts))
 	c.risksActive.Reset()
-	for k, n := range counts {
-		c.risksActive.WithLabelValues(k.cluster, k.check, k.sev).Set(n)
+	for i, v := range counts {
+		c.risksActive.WithLabelValues(clusters[i/len(riskSeverities)], riskSeverities[i%len(riskSeverities)]).Set(float64(v))
 	}
 	return nil
 }
 
+func (c *Collector) collectRisksByCheck(ctx context.Context) error {
+	counts := make([]int, len(CheckTypes))
+	err := fanout(len(CheckTypes), func(i int) (err error) {
+		counts[i], err = c.api.RiskCount(ctx, RiskFilter{Statuses: activeStatuses, CheckType: CheckTypes[i]})
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	for i, v := range counts {
+		c.risksByCheck.WithLabelValues(CheckTypes[i]).Set(float64(v))
+	}
+	return nil
+}
+
+// collectIssues makes one call per cluster and type (open and closed together). A failed pair keeps its
+// previous value rather than failing the whole step, because one flaky cluster should not blank the rest.
 func (c *Collector) collectIssues(ctx context.Context, clusters []string) error {
 	now := time.Now()
 	from := now.Add(-issueWindow)
-	open := map[[2]string]float64{}
-	var firstErr error
-	for _, cl := range clusters {
-		for _, typ := range IssueTypes {
-			open[[2]string{cl, typ}] = 0
-			is, err := c.api.Issues(ctx, cl, typ, "open", from, now)
-			if err != nil {
-				firstErr = fmt.Errorf("open issues %s/%s: %w", cl, typ, err)
-				continue
-			}
-			open[[2]string{cl, typ}] = float64(len(is))
+	nt := len(IssueTypes)
+	results := make([][]Issue, len(clusters)*nt)
+	errs := make([]error, len(results))
+	_ = fanout(len(results), func(i int) error {
+		cl, typ := clusters[i/nt], IssueTypes[i%nt]
+		is, err := c.api.Issues(ctx, cl, typ, []string{"open", "closed"}, from, now)
+		if err != nil {
+			errs[i] = fmt.Errorf("issues %s/%s: %w", cl, typ, err)
+			return nil
+		}
+		results[i] = is
+		return nil
+	})
+	failed := errors.Join(errs...)
 
-			closed, err := c.api.Issues(ctx, cl, typ, "closed", from, now)
-			if err != nil {
-				firstErr = fmt.Errorf("closed issues %s/%s: %w", cl, typ, err)
-				continue
-			}
-			slog.Debug("collected issues", "cluster", cl, "type", typ, "open", len(is), "closed", len(closed))
-			for _, i := range closed {
-				k := fmt.Sprintf("%s|%s|%d|%s", cl, typ, i.StartTime, i.Summary)
+	if failed == nil {
+		c.issuesOpen.Reset()
+	}
+	for i, is := range results {
+		if errs[i] != nil {
+			continue
+		}
+		cl, typ := clusters[i/nt], IssueTypes[i%nt]
+		open := 0
+		for _, iss := range is {
+			switch iss.Status {
+			case "open":
+				open++
+			case "closed":
+				k := fmt.Sprintf("%s|%s|%d|%s", cl, typ, iss.StartTime, iss.Summary)
 				if _, dup := c.seenClosed[k]; dup {
 					continue
 				}
@@ -183,18 +228,16 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 				}
 			}
 		}
+		c.issuesOpen.WithLabelValues(cl, typ).Set(float64(open))
+		slog.Debug("collected issues", "cluster", cl, "type", typ, "open", open, "total", len(is))
 	}
-	for k := range c.seenClosed {
-		if c.seenClosed[k].Before(now.Add(-issueWindow - time.Hour)) {
+	for k, seen := range c.seenClosed {
+		if seen.Before(now.Add(-issueWindow - time.Hour)) {
 			delete(c.seenClosed, k)
 		}
 	}
-	if firstErr == nil {
+	if failed == nil {
 		c.firstIssues = false
 	}
-	c.issuesOpen.Reset()
-	for k, n := range open {
-		c.issuesOpen.WithLabelValues(k[0], k[1]).Set(n)
-	}
-	return firstErr
+	return failed
 }

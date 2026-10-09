@@ -23,9 +23,10 @@ type Client struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
+	sem     chan struct{}
 }
 
-func NewClient(baseURL, apiKey string, timeout time.Duration, reg prometheus.Registerer) *Client {
+func NewClient(baseURL, apiKey string, timeout time.Duration, concurrency int, reg prometheus.Registerer) *Client {
 	hist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "komodor_exporter_api_request_duration_seconds", Help: "Duration of each Komodor API attempt (retries counted separately).",
 		Buckets: durationBuckets}, []string{"endpoint", "code"})
@@ -37,10 +38,17 @@ func NewClient(baseURL, apiKey string, timeout time.Duration, reg prometheus.Reg
 	rc.Logger = leveledLogger{}
 	rc.HTTPClient.Timeout = timeout
 	rc.HTTPClient.Transport = loggingTransport{http.DefaultTransport, hist}
-	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient()}
+	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient(), sem: make(chan struct{}, max(concurrency, 1))}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body, out any) error {
+	// One limit for the whole client, so concurrent steps cannot together exceed it.
+	select {
+	case c.sem <- struct{}{}:
+		defer func() { <-c.sem }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -105,53 +113,39 @@ func (t loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-type Risk struct {
-	CheckType   string `json:"checkType"`
-	ClusterName string `json:"clusterName"`
-	Severity    string `json:"severity"`
+type RiskFilter struct {
+	Statuses  []string
+	Severity  string
+	Cluster   string
+	CheckType string
 }
 
-type riskPage struct {
-	TotalResults   int    `json:"totalResults"`
-	HasMoreResults bool   `json:"hasMoreResults"`
-	Violations     []Risk `json:"violations"`
-}
-
-func riskQuery(status, severity string, pageSize, offset int) url.Values {
+// RiskCount reads totalResults from a one-row page, so no risk rows are transferred or paged.
+func (c *Client) RiskCount(ctx context.Context, f RiskFilter) (int, error) {
 	q := url.Values{}
-	q.Set("pageSize", strconv.Itoa(pageSize))
-	q.Set("offset", strconv.Itoa(offset))
-	q.Add("status", status)
-	if severity != "" {
-		q.Add("severity", severity)
+	q.Set("pageSize", "1")
+	q.Set("offset", "0")
+	for _, s := range f.Statuses {
+		q.Add("status", s)
+	}
+	if f.Severity != "" {
+		q.Add("severity", f.Severity)
+	}
+	if f.Cluster != "" {
+		q.Add("clusterName", f.Cluster)
+	}
+	if f.CheckType != "" {
+		q.Add("checkType", f.CheckType)
 	}
 	// impactGroupType is required by the API; send all three to match everything.
 	for _, t := range []string{"static", "dynamic", "realtime"} {
 		q.Add("impactGroupType", t)
 	}
-	return q
-}
-
-// RiskCount uses totalResults from a one-row page so no rows are transferred.
-func (c *Client) RiskCount(ctx context.Context, status, severity string) (int, error) {
-	var p riskPage
-	err := c.do(ctx, http.MethodGet, "/api/v2/health/risks", riskQuery(status, severity, 1, 0), nil, &p)
-	return p.TotalResults, err
-}
-
-func (c *Client) Risks(ctx context.Context, status string) ([]Risk, error) {
-	const size = 500
-	var all []Risk
-	for off := 0; ; off += size {
-		var p riskPage
-		if err := c.do(ctx, http.MethodGet, "/api/v2/health/risks", riskQuery(status, "", size, off), nil, &p); err != nil {
-			return nil, err
-		}
-		all = append(all, p.Violations...)
-		if !p.HasMoreResults || len(p.Violations) == 0 {
-			return all, nil
-		}
+	var p struct {
+		TotalResults int `json:"totalResults"`
 	}
+	err := c.do(ctx, http.MethodGet, "/api/v2/health/risks", q, nil, &p)
+	return p.TotalResults, err
 }
 
 func (c *Client) Clusters(ctx context.Context) ([]string, error) {
@@ -174,21 +168,34 @@ func (c *Client) Clusters(ctx context.Context) ([]string, error) {
 
 type Issue struct {
 	Type      string `json:"type"`
+	Status    string `json:"status"`
 	StartTime int64  `json:"startTime"`
 	EndTime   int64  `json:"endTime"`
 	Summary   string `json:"summary"`
 }
 
+// Check types accepted by the risks API; new ones added upstream are simply not broken out.
+var CheckTypes = []string{
+	"throttledCPU", "requestsLimitsRatio", "deprecatedApis", "kubernetesEndOfLife", "noisyNeighbor",
+	"kubernetesVersionDeprecated", "nodeTerminationAutoScaling", "nodeTerminationSpotInstance",
+	"restartingContainers", "HPAMax", "underProvisionedWorkloads", "singlePointOfFailure",
+	"deploymentMissingReplicas", "missingPDB", "missingTopologySpreadConstraint", "HPAMinAvailability",
+	"missingHPA", "priorityClassNotSet", "cpuRequestsMissing", "cpuLimitsMissing", "memoryRequestsMissing",
+	"memoryLimitsMissing", "livenessProbeMissing", "readinessProbeMissing", "certificateExpiration",
+	"idleGpu", "cascadingFailure", "unhealthyService", "unhealthyWorkflow", "failedJob", "failedCronJob",
+	"unhealthyNode", "unhealthyPVC", "externalDNSNotSynced", "scaleDownImpact",
+}
+
 var IssueTypes = []string{"availability", "failed-deploy", "node-issue", "pvc-issue", "workflow-issue"}
 
-func (c *Client) Issues(ctx context.Context, cluster, typ, status string, from, to time.Time) ([]Issue, error) {
+func (c *Client) Issues(ctx context.Context, cluster, typ string, statuses []string, from, to time.Time) ([]Issue, error) {
 	const size = 500
 	var all []Issue
 	for page := 0; ; page++ {
 		body := map[string]any{
 			"scope": map[string]any{"cluster": cluster},
 			"props": map[string]any{
-				"type": typ, "statuses": []string{status},
+				"type": typ, "statuses": statuses,
 				"fromEpoch": from.Unix(), "toEpoch": to.Unix(),
 			},
 			"pagination": map[string]any{"pageSize": size, "page": page},

@@ -8,7 +8,8 @@ Prometheus exporter for the [Komodor](https://komodor.com) public API. It polls 
 |---|---|---|
 | `komodor_clusters` | | Clusters connected to Komodor |
 | `komodor_reliability_risks` | `status`, `severity` | All statuses: open, confirmed, resolved, dismissed, ignored, manually_resolved |
-| `komodor_reliability_risks_active` | `cluster`, `check_type`, `severity` | Open + confirmed risks |
+| `komodor_reliability_risks_active` | `cluster`, `severity` | Open + confirmed risks |
+| `komodor_reliability_risks_by_check` | `check_type` | Open + confirmed risks per check type |
 | `komodor_issues_open` | `cluster`, `type` | See limits below |
 | `komodor_issues_closed_total` | `cluster`, `type` | Counter of issues seen closing since start |
 | `komodor_exporter_api_request_duration_seconds` | `endpoint`, `code` | Histogram per API attempt, buckets 0.1s to 300s |
@@ -23,6 +24,7 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 |---|---|---|
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
+| `--concurrency` | `8` | Maximum concurrent API requests across all steps |
 | `--poll-interval` | `5m` | Minimum `30s`. A poll is cancelled if it runs longer than this |
 | `--request-timeout` | `2m` | Timeout per API attempt; raise it for slow endpoints |
 | `--listen-addr` | `:9090` | Serves `/metrics` and `/healthz` |
@@ -45,7 +47,7 @@ Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) in
 ## Limits
 
 - The issues API only looks back 2 days per query and returns no issue ID. Issues open for more than 2 days are not counted in `komodor_issues_open`, and closed issues are deduplicated on cluster, type, start time and summary, so `komodor_issues_closed_total` is approximate. Closed issues present at startup are not counted.
-- Issues are queried per cluster and type, so API calls per poll grow with cluster count.
+- Risk metrics come from `totalResults` on one-row pages, so no risks are paged. Issues have no total, so they are paged per cluster and type (one call covers open and closed), and API calls per poll grow with cluster count. Steps run concurrently, capped by `--concurrency`.
 - Failed API calls are retried up to 4 times with backoff (429 and 5xx), so a briefly rate-limited poll usually still completes.
 - History starts when the exporter does; nothing is backfilled.
 

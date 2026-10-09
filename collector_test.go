@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,7 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-func fakeAPI(t *testing.T, closed *[]Issue) *httptest.Server {
+func fakeAPI(closed *[]Issue) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-API-KEY") != "k" {
 			http.Error(w, "no", http.StatusUnauthorized)
@@ -22,32 +24,26 @@ func fakeAPI(t *testing.T, closed *[]Issue) *httptest.Server {
 		case "/api/v2/clusters":
 			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"},{"name":"c2"}]}}`))
 		case "/api/v2/health/risks":
-			sev := r.URL.Query().Get("severity")
-			if sev == "" { // paged listing
-				_, _ = w.Write([]byte(`{"totalResults":2,"hasMoreResults":false,"violations":[{"checkType":"missingPDB","clusterName":"c1","severity":"high"},{"checkType":"missingPDB","clusterName":"c1","severity":"high"}]}`))
-				return
-			}
+			q := r.URL.Query()
 			n := 0
-			if sev == "high" && r.URL.Query().Get("status") == "open" {
+			switch {
+			case q.Get("checkType") == "missingPDB":
+				n = 5
+			case q.Get("clusterName") == "c1" && q.Get("severity") == "high":
+				n = 3
+			case q.Get("clusterName") == "" && q.Get("severity") == "high" && slices.Equal(q["status"], []string{"open"}):
 				n = 7
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"totalResults": n, "violations": []any{}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"totalResults": n})
 		case "/api/v2/clusters/issues/search":
 			var b struct {
 				Scope struct{ Cluster string }
-				Props struct {
-					Type     string
-					Statuses []string
-				}
+				Props struct{ Type string }
 			}
 			_ = json.NewDecoder(r.Body).Decode(&b)
 			is := []Issue{}
 			if b.Scope.Cluster == "c1" && b.Props.Type == "availability" {
-				if b.Props.Statuses[0] == "open" {
-					is = []Issue{{Type: "availability", StartTime: 1, Summary: "a"}}
-				} else {
-					is = *closed
-				}
+				is = append([]Issue{{Type: "availability", Status: "open", StartTime: 1, Summary: "a"}}, *closed...)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issues": is}})
 		default:
@@ -57,11 +53,11 @@ func fakeAPI(t *testing.T, closed *[]Issue) *httptest.Server {
 }
 
 func TestCollect(t *testing.T) {
-	closed := []Issue{{Type: "availability", StartTime: 5, Summary: "old"}}
-	srv := fakeAPI(t, &closed)
+	closed := []Issue{{Type: "availability", Status: "closed", StartTime: 5, Summary: "old"}}
+	srv := fakeAPI(&closed)
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, reg), time.Minute, reg)
+	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, reg), time.Minute, reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
@@ -72,36 +68,25 @@ func TestCollect(t *testing.T) {
 			t.Errorf("%s: count %d, err %v", name, n, err)
 		}
 	}
-	if got := testutil.ToFloat64(c.clusters); got != 2 {
-		t.Errorf("clusters = %v", got)
+	check := func(name string, got, want float64) {
+		t.Helper()
+		if got != want {
+			t.Errorf("%s = %v, want %v", name, got, want)
+		}
 	}
-	if got := testutil.ToFloat64(c.risks.WithLabelValues("open", "high")); got != 7 {
-		t.Errorf("risks open/high = %v", got)
-	}
-	// 2 rows from "open" + 2 from "confirmed", same key.
-	if got := testutil.ToFloat64(c.risksActive.WithLabelValues("c1", "missingPDB", "high")); got != 4 {
-		t.Errorf("active risks = %v", got)
-	}
-	if got := testutil.ToFloat64(c.issuesOpen.WithLabelValues("c1", "availability")); got != 1 {
-		t.Errorf("open issues = %v", got)
-	}
-	// Pre-existing closed issues seed the dedupe set without counting.
-	if got := testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")); got != 0 {
-		t.Errorf("closed after first poll = %v", got)
-	}
+	check("clusters", testutil.ToFloat64(c.clusters), 2)
+	check("risks open/high", testutil.ToFloat64(c.risks.WithLabelValues("open", "high")), 7)
+	check("active c1/high", testutil.ToFloat64(c.risksActive.WithLabelValues("c1", "high")), 3)
+	check("by check", testutil.ToFloat64(c.risksByCheck.WithLabelValues("missingPDB")), 5)
+	check("open issues", testutil.ToFloat64(c.issuesOpen.WithLabelValues("c1", "availability")), 1)
+	check("closed after first poll", testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")), 0)
 
-	closed = append(closed, Issue{Type: "availability", StartTime: 9, Summary: "new"})
-	if err := c.collect(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")); got != 1 {
-		t.Errorf("closed after second poll = %v, want 1 (no double count)", got)
-	}
-	if err := c.collect(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")); got != 1 {
-		t.Errorf("closed after third poll = %v, want 1", got)
+	closed = append(closed, Issue{Type: "availability", Status: "closed", StartTime: 9, Summary: "new"})
+	for range 2 {
+		if err := c.collect(ctx); err != nil {
+			t.Fatal(err)
+		}
+		check("closed after new issue", testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")), 1)
 	}
 }
 
@@ -115,8 +100,28 @@ func TestClientRetries(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
 	}))
 	defer srv.Close()
-	got, err := NewClient(srv.URL, "k", 10*time.Second, prometheus.NewRegistry()).Clusters(context.Background())
+	got, err := NewClient(srv.URL, "k", 10*time.Second, 1, prometheus.NewRegistry()).Clusters(context.Background())
 	if err != nil || len(got) != 1 || calls != 3 {
 		t.Fatalf("got %v, err %v, calls %d", got, err, calls)
+	}
+}
+
+func TestConcurrencyLimit(t *testing.T) {
+	var inflight, peak atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := inflight.Add(1)
+		defer inflight.Add(-1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		time.Sleep(30 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"totalResults":1}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "k", 10*time.Second, 3, prometheus.NewRegistry())
+	if err := fanout(12, func(int) error { _, err := c.RiskCount(context.Background(), RiskFilter{}); return err }); err != nil {
+		t.Fatal(err)
+	}
+	if p := peak.Load(); p < 2 || p > 3 {
+		t.Fatalf("peak in-flight = %d, want 2..3", p)
 	}
 }

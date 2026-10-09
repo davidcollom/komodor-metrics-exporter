@@ -514,7 +514,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "topk(10, sum by (check_type) (komodor_reliability_risks_active))",
+          "expr": "topk(10, komodor_reliability_risks_by_check > 0)",
           "legendFormat": "{{check_type}}"
         }
       ],
