@@ -1,0 +1,59 @@
+suite: deployment
+templates: [templates/deployment.yaml, templates/configmap.yaml]
+set: {apiKey: abc}
+tests:
+  - it: runs one replica of the chart appVersion image with the mounted config
+    template: templates/deployment.yaml
+    asserts:
+      - isKind: {of: Deployment}
+      - equal: {path: spec.replicas, value: 1}
+      - equal: {path: 'spec.template.spec.containers[0].image', value: "ghcr.io/davidcollom/komodor-metrics-exporter:0.1.2"}
+      - equal: {path: 'spec.template.spec.containers[0].args', value: ["--config=/etc/komodor-exporter/config.yaml"]}
+      - equal: {path: 'spec.template.spec.containers[0].volumeMounts[0].mountPath', value: /etc/komodor-exporter}
+
+  - it: takes the API key from the chart-created Secret
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: 'spec.template.spec.containers[0].env[0].name', value: KOMODOR_API_KEY}
+      - equal: {path: 'spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key', value: api-key}
+      - matchRegex: {path: 'spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.name', pattern: komodor-metrics-exporter$}
+
+  - it: takes the API key from an existing Secret
+    template: templates/deployment.yaml
+    set: {existingSecret: mine, existingSecretKey: token}
+    asserts:
+      - equal: {path: 'spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.name', value: mine}
+      - equal: {path: 'spec.template.spec.containers[0].env[0].valueFrom.secretKeyRef.key', value: token}
+
+  - it: honours an image tag override
+    template: templates/deployment.yaml
+    set: {image.tag: "9.9.9"}
+    asserts:
+      - equal: {path: 'spec.template.spec.containers[0].image', value: "ghcr.io/davidcollom/komodor-metrics-exporter:9.9.9"}
+
+  - it: adds extra env vars
+    template: templates/deployment.yaml
+    set: {env: {KOMODOR_LOG_LEVEL: debug}}
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content: {name: KOMODOR_LOG_LEVEL, value: debug}
+
+  - it: runs non-root with a read-only root filesystem
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: spec.template.spec.securityContext.runAsNonRoot, value: true}
+      - equal: {path: 'spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem', value: true}
+      - equal: {path: 'spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation', value: false}
+      - equal: {path: 'spec.template.spec.containers[0].securityContext.capabilities.drop', value: [ALL]}
+
+  - it: probes the health endpoint
+    template: templates/deployment.yaml
+    asserts:
+      - equal: {path: 'spec.template.spec.containers[0].livenessProbe.httpGet.path', value: /healthz}
+      - equal: {path: 'spec.template.spec.containers[0].readinessProbe.httpGet.path', value: /healthz}
+
+  - it: restarts the pod when the config changes
+    template: templates/deployment.yaml
+    asserts:
+      - exists: {path: 'spec.template.metadata.annotations["checksum/config"]'}

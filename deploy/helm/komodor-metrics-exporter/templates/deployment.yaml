@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kme.fullname" . }}
+  labels: {{- include "kme.labels" . | nindent 4 }}
+spec:
+  replicas: 1   # a second replica would only poll the API twice for the same numbers
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {{- include "kme.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "kme.selector" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: exporter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config=/etc/komodor-exporter/config.yaml"]
+          env:
+            - name: KOMODOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kme.secretName" . }}
+                  key: {{ .Values.existingSecretKey }}
+            {{- range $k, $v := .Values.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - {name: metrics, containerPort: 9090}
+          livenessProbe:
+            httpGet: {path: /healthz, port: metrics}
+          readinessProbe:
+            httpGet: {path: /healthz, port: metrics}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/komodor-exporter, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "kme.fullname" . }}}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

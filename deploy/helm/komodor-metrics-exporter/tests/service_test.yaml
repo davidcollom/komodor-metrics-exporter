@@ -1,0 +1,24 @@
+suite: service and servicemonitor
+templates: [templates/service.yaml, templates/servicemonitor.yaml]
+set: {apiKey: abc}
+tests:
+  - it: exposes the metrics port
+    template: templates/service.yaml
+    asserts:
+      - isKind: {of: Service}
+      - equal: {path: 'spec.ports[0].port', value: 9090}
+      - equal: {path: 'spec.ports[0].targetPort', value: metrics}
+
+  - it: has no ServiceMonitor by default
+    template: templates/servicemonitor.yaml
+    asserts:
+      - hasDocuments: {count: 0}
+
+  - it: renders a ServiceMonitor when enabled
+    template: templates/servicemonitor.yaml
+    set: {serviceMonitor.enabled: true, serviceMonitor.interval: 30s, serviceMonitor.labels: {release: prom}}
+    asserts:
+      - isKind: {of: ServiceMonitor}
+      - equal: {path: 'spec.endpoints[0].port', value: metrics}
+      - equal: {path: 'spec.endpoints[0].interval', value: 30s}
+      - equal: {path: 'metadata.labels.release', value: prom}

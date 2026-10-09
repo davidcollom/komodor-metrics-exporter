@@ -1,0 +1,34 @@
+suite: configmap
+templates: [templates/configmap.yaml]
+set: {apiKey: abc}
+tests:
+  - it: ships the exporter defaults with every metric group on
+    asserts:
+      - isKind: {of: ConfigMap}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'poll-interval: 5m'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'issues-window: 1h'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'concurrency: 8'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'max-retries: 2'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'clusters: true'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'risks: true'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'risks_active: true'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'risks_by_check: true'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'issues: true'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'skip-issues: \[\]'}
+      - notMatchRegex: {path: 'data["config.yaml"]', pattern: 'false'}
+
+  - it: never puts the API key in the ConfigMap
+    set: {apiKey: super-secret-value}
+    asserts:
+      - notMatchRegex: {path: 'data["config.yaml"]', pattern: super-secret-value}
+
+  - it: renders overrides
+    set:
+      config.poll-interval: 10m
+      config.metrics.issues: false
+      config.skip-issues: ["a/node-issue", "*/pvc-issue"]
+    asserts:
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'poll-interval: 10m'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: 'issues: false'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: '- a/node-issue'}
+      - matchRegex: {path: 'data["config.yaml"]', pattern: "- '\\*/pvc-issue'"}

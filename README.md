@@ -77,6 +77,22 @@ Structured logs (JSON by default) go to stderr. At `--log-level debug` every API
 docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metrics-exporter
 ```
 
+## Deploy with Helm
+
+The chart is in [`deploy/helm/komodor-metrics-exporter`](deploy/helm/komodor-metrics-exporter). It takes the API key as a Secret and the exporter configuration as a ConfigMap, mounted and passed with `--config`:
+
+```sh
+helm install komodor-metrics-exporter deploy/helm/komodor-metrics-exporter \
+  --set apiKey=... \
+  --set 'config.skip-issues={my-cluster/node-issue}' \
+  --set config.metrics.risks_by_check=false
+```
+
+- **API key:** set `apiKey` and the chart creates the Secret, or point `existingSecret` (and `existingSecretKey`, default `api-key`) at one you manage. The key never goes into the ConfigMap.
+- **Config:** everything under `config:` in [`values.yaml`](deploy/helm/komodor-metrics-exporter/values.yaml) is the exporter's config file, with the exporter's own defaults and every metric group on. Changing it rolls the pod. Use `env` to override a value with a `KOMODOR_*` variable.
+- **Scraping:** the Service exposes `/metrics` on 9090. Set `serviceMonitor.enabled=true` if you run the Prometheus Operator.
+- It runs a single replica, non-root, with a read-only root filesystem. The chart has [unit tests](deploy/helm/komodor-metrics-exporter/tests) that run in CI with [helm-unittest](https://github.com/helm-unittest/helm-unittest).
+
 ## Demo stack
 
 `demo/` has a Docker Compose stack that builds the exporter from source and runs it with Prometheus and Grafana, with the dashboard already provisioned:

@@ -13,3 +13,10 @@ jobs:
       - run: go vet ./... && go test -race ./...
       - uses: goreleaser/goreleaser-action@v6
         with: {args: check}
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker run --rm -v "$PWD/deploy/helm/komodor-metrics-exporter:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 .
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/komodor-metrics-exporter --set apiKey=ci

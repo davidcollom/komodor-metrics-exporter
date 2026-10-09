@@ -1,0 +1,53 @@
+image:
+  repository: ghcr.io/davidcollom/komodor-metrics-exporter
+  tag: ""            # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+
+# The Komodor API key. Set exactly one of these.
+apiKey: ""                 # the chart creates a Secret from this value
+existingSecret: ""         # or name an existing Secret
+existingSecretKey: api-key # key inside existingSecret (the chart-made Secret uses this key too)
+
+# Rendered into a ConfigMap and passed with --config. These are the exporter's defaults, so an empty
+# override changes nothing. Flags and KOMODOR_* env vars (see `env`) take precedence over this file.
+config:
+  poll-interval: 5m
+  request-timeout: 2m
+  issues-window: 1h        # how far back to look for closed issues (max 48h)
+  concurrency: 8
+  slow-concurrency: 2
+  max-retries: 2
+  listen-addr: ":9090"
+  log-level: info          # debug logs every API request
+  log-format: json
+  metrics:                 # set a group to false to stop collecting it
+    clusters: true
+    risks: true
+    risks_active: true
+    risks_by_check: true
+    issues: true
+  skip-issues: []          # cluster/type pairs to skip, e.g. ["my-cluster/node-issue", "*/workflow-issue"]
+  issue-types: []          # empty means all types
+
+# Extra environment variables, e.g. to override a config value.
+env: {}
+
+service:
+  type: ClusterIP
+  port: 9090
+  annotations: {}
+
+# Needs the Prometheus Operator CRDs.
+serviceMonitor:
+  enabled: false
+  interval: 1m
+  labels: {}
+
+podAnnotations: {}
+resources:
+  requests: {cpu: 10m, memory: 32Mi}
+  limits: {memory: 128Mi}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+imagePullSecrets: []
