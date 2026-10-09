@@ -61,7 +61,7 @@ Everything under `config:` is rendered into a ConfigMap and passed to the export
 | `config.log-level` | `info` | `debug`, `info`, `warn`, `error`; `debug` logs every API request |
 | `config.log-format` | `json` | `json` or `text` |
 | `config.metrics.<group>` | all `true` | Switch a group off: `clusters`, `risks`, `risks_active`, `risks_by_check`, `issues` |
-| `config.skip-issues` | `[]` | `cluster/type` pairs not to query for issues; either side may be `*` |
+| `config.skip-issues` | `[]` | What not to query for issues: an issue type (every cluster, e.g. `node-issue`) or `cluster/type`, where either side may be `*` |
 | `config.issue-types` | `[]` | Only query these issue types (empty means all) |
 | `env` | `{}` | Extra environment variables, e.g. `KOMODOR_LOG_LEVEL: debug` |
 | `image.repository` / `image.tag` | `ghcr.io/davidcollom/komodor-metrics-exporter` / chart `appVersion` | Container image |

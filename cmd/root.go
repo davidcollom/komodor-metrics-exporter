@@ -61,7 +61,7 @@ func newRootCmd(version string) *cobra.Command {
 	f.Duration("request-timeout", 2*time.Minute, "timeout for each API request attempt; raise it for slow endpoints")
 	f.StringSlice("disable", nil, "metric groups to switch off: clusters, risks, risks_active, risks_by_check, issues (or set metrics.<group>: false in the config file)")
 	f.Duration("issues-window", time.Hour, "how far back to look for closed issues (max 48h); open issues always use the full 48h")
-	f.StringSlice("skip-issues", nil, "cluster/type pairs to skip when querying issues, e.g. my-cluster/node-issue; either side may be * (or skip-issues: [..] in the config file)")
+	f.StringSlice("skip-issues", nil, "issues to skip: an issue type (every cluster), e.g. node-issue, or cluster/type where either side may be * (or skip-issues: [..] in the config file)")
 	f.StringSlice("issue-types", nil, "only query these issue types (default all): "+strings.Join(komodor.IssueTypes, ", "))
 	f.Int("max-retries", 2, "retries per request on 5xx (except 504), 429 and network errors; backoff is 1s, 2s, 4s, ...")
 	f.Int("concurrency", 8, "maximum concurrent API requests (cluster-scoped and issues calls)")

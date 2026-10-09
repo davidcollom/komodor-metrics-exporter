@@ -17,8 +17,8 @@ type IssueFilter struct {
 
 type skip struct{ raw, cluster, typ string }
 
-// NewIssueFilter takes issue types to select (empty means all) and skip entries of the form
-// cluster/type, where either side may be "*".
+// NewIssueFilter takes issue types to select (empty means all) and skip entries: a bare issue type
+// (every cluster) or cluster/type, where either side may be "*".
 func NewIssueFilter(types, skips []string) (IssueFilter, error) {
 	f := IssueFilter{types: types}
 	for _, t := range types {
@@ -27,9 +27,14 @@ func NewIssueFilter(types, skips []string) (IssueFilter, error) {
 		}
 	}
 	for _, s := range skips {
+		// A bare issue type is shorthand for every cluster, and avoids quoting "*/type" in YAML.
+		if slices.Contains(komodor.IssueTypes, s) {
+			f.skips = append(f.skips, skip{raw: s, cluster: "*", typ: s})
+			continue
+		}
 		i := strings.LastIndex(s, "/")
 		if i <= 0 || i == len(s)-1 {
-			return f, fmt.Errorf("invalid skip-issues entry %q, want cluster/type (either may be *)", s)
+			return f, fmt.Errorf("invalid skip-issues entry %q, want an issue type (%v) or cluster/type, where either may be *", s, komodor.IssueTypes)
 		}
 		sk := skip{raw: s, cluster: s[:i], typ: s[i+1:]}
 		if sk.typ != "*" && !slices.Contains(komodor.IssueTypes, sk.typ) {

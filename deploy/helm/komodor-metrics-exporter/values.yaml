@@ -26,7 +26,7 @@ config:
     risks_active: true
     risks_by_check: true
     issues: true
-  skip-issues: []          # cluster/type pairs to skip, e.g. ["my-cluster/node-issue", "*/workflow-issue"]
+  skip-issues: []          # an issue type (every cluster) or cluster/type; e.g. [node-issue, "my-cluster/pvc-issue"]
   issue-types: []          # empty means all types
 
 # Extra environment variables, e.g. to override a config value.

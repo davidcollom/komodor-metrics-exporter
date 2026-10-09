@@ -256,6 +256,28 @@ func TestIssueFilter(t *testing.T) {
 	}
 }
 
+func TestBareIssueTypeSkipsItOnEveryCluster(t *testing.T) {
+	f, err := NewIssueFilter(nil, []string{"node-issue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := f.Pairs([]string{"a", "b"})
+	if len(ps) != 8 {
+		t.Fatalf("pairs = %v, want 4 types x 2 clusters", ps)
+	}
+	for _, p := range ps {
+		if p[1] == "node-issue" {
+			t.Errorf("node-issue not skipped on %s", p[0])
+		}
+	}
+	if len(f.UnmatchedSkips([]string{"a"})) != 0 {
+		t.Error("a bare type names no cluster, so it can never be unmatched")
+	}
+	if _, err := NewIssueFilter(nil, []string{"not-a-type"}); err == nil {
+		t.Error("a bare word that is not an issue type should still be rejected")
+	}
+}
+
 func TestSkippedPairsAreNotQueried(t *testing.T) {
 	var queried sync.Map
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -14,7 +14,7 @@ metrics:
   risks_by_check: true  # komodor_reliability_risks_by_check{check_type}
   issues: true          # komodor_issues_open, komodor_issues_closed_total
 
-# Issue queries can be narrowed. skip-issues takes cluster/type pairs (either side may be *),
+# Issue queries can be narrowed. skip-issues takes an issue type (every cluster) or cluster/type (either side may be *),
 # useful when the API fails for one pair. issue-types selects which types are queried at all.
-# skip-issues: [my-cluster/node-issue, "*/workflow-issue"]
+# skip-issues: [node-issue, my-cluster/pvc-issue]
 # issue-types: [availability, failed-deploy]

@@ -25,7 +25,7 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
 | `--disable` | none | Metric groups to switch off, comma-separated (`KOMODOR_DISABLE`) |
-| `--skip-issues` | none | `cluster/type` pairs not to query for issues, comma-separated (`KOMODOR_SKIP_ISSUES`) or a list in the config file. Either side may be `*` |
+| `--skip-issues` | none | What not to query for issues, comma-separated (`KOMODOR_SKIP_ISSUES`) or a list in the config file: an issue type (every cluster), or `cluster/type` where either side may be `*` |
 | `--issue-types` | all | Only query these issue types: `availability`, `failed-deploy`, `node-issue`, `pvc-issue`, `workflow-issue` |
 | `--max-retries` | `2` | Retries per request on 5xx (not 504), 429 and network errors, with exponential, jittered backoff (1s, 2s, 4s, ... up to 15s) |
 | `--issues-window` | `1h` | How far back to look for closed issues (at least 2x the poll interval, max 48h). Open issues always use 48h |
@@ -62,8 +62,8 @@ The issues API can return a persistent 500 for a single cluster and type (for ex
 
 ```yaml
 skip-issues:
-  - my-cluster/node-issue
-  - "*/workflow-issue"   # every cluster
+  - node-issue           # this type on every cluster (same as "*/node-issue")
+  - my-cluster/pvc-issue # one type on one cluster
   - legacy/*             # every type on one cluster
 ```
 
@@ -115,9 +115,12 @@ cd demo && KOMODOR_API_KEY=... docker compose up --build
 
 Grafana is at http://localhost:3000 (login `admin` / `demo`), Prometheus at http://localhost:9091 and the exporter's `/metrics` at http://localhost:9092/metrics. It polls every minute, so give the first poll a moment. Set `KOMODOR_SKIP_ISSUES=cluster/type` (see below) if one cluster's issues query fails and keeps the poll from counting as successful. Prometheus data is kept in a named volume, so `docker compose down` keeps it and `docker compose down -v` deletes it. To pick up exporter code changes without touching Prometheus or Grafana, run `docker compose up -d --build --no-deps exporter`.
 
-## Grafana dashboard
+## Grafana dashboards
 
-Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) into Grafana and pick your Prometheus data source. A multi-select **Cluster** variable (default All) filters the per-cluster panels: active risks, risks by severity, open and closed issues, and a per-cluster breakdown table. Panels labelled "all clusters" (risks by status and by check type) are not per-cluster metrics, so the variable does not filter them. Exporter freshness is in the top row.
+Import the JSON files in [`dashboards/`](dashboards) into Grafana and pick your Prometheus data source. The demo stack loads both automatically.
+
+- **Komodor Platform Metrics** ([`komodor-platform.json`](dashboards/komodor-platform.json)): an overview. A multi-select **Cluster** variable (default All) filters the per-cluster panels: active risks, risks by severity, open and closed issues, and a per-cluster breakdown table. Panels labelled "all clusters" (risks by status and by check type) are not per-cluster metrics, so the variable does not filter them. Exporter freshness and the last poll result are in the top row. Gaps in the lines are connected.
+- **Komodor Hotspots** ([`komodor-hotspots.json`](dashboards/komodor-hotspots.json)): which clusters need attention. Top-N bars (set **Top N**) for the most active risks, high-severity risks and open issues, a heat table with one row per cluster and a column per severity and issue type (darker red means more, sorted by high-severity risks), and a heatmap and chart of how risk and open issues change over time per cluster.
 
 ## Limits
 
