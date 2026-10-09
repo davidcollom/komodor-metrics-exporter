@@ -17,6 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker run --rm -v "$PWD/deploy/helm/komodor-metrics-exporter:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 .
+      - run: docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/deploy/helm/komodor-metrics-exporter:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 .
       - uses: azure/setup-helm@v4
       - run: helm lint deploy/helm/komodor-metrics-exporter --set apiKey=ci
