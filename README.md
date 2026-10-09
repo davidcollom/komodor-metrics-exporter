@@ -132,6 +132,12 @@ Import the JSON files in [`dashboards/`](dashboards) into Grafana and pick your 
 
 _Both screenshots show made-up data from a mock API; the cluster names are invented._
 
+## Safety: read-only
+
+The exporter only ever makes three read requests: `GET /api/v2/clusters`, `GET /api/v2/health/risks` and `POST /api/v2/clusters/issues/search` (a search that takes a body). The client refuses any other method and path before it leaves the process, and a unit test pins that list, so even an API key that is allowed to modify your Komodor account cannot be used to change anything through this exporter. Give it the least-privileged key you can regardless, ideally a read-only one.
+
+The `live` workflow runs read-only tests against a real account. It is manual (`workflow_dispatch`) only, uses the repository secret `KOMODOR_API_KEY`, and prints only numbers and status codes, never cluster names, because the logs of a public repository are public.
+
 ## Limits
 
 - Closed issues are only seen within `--issues-window` (default 1h), so one that closes after being open for longer than that may be missed if the API filters on start time rather than end time; raise the window if you see gaps. The issues API only looks back 2 days per query and returns no issue ID. Issues open for more than 2 days are not counted in `komodor_issues_open`, and closed issues are deduplicated on cluster, type, start time and summary, so `komodor_issues_closed_total` is approximate. Closed issues present at startup are not counted.

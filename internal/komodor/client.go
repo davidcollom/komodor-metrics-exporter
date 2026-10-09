@@ -57,7 +57,19 @@ func NewClient(o ClientOptions, reg prometheus.Registerer) *Client {
 	return &Client{baseURL: o.BaseURL, apiKey: o.APIKey, http: rc.StandardClient()}
 }
 
+// readOnlyEndpoints is every request the exporter is allowed to make. The issues search is a POST
+// only because it takes a body; it reads. Anything else is refused before it leaves the process, so a
+// bug, or an API key that could modify the account, can never be used to change anything in Komodor.
+var readOnlyEndpoints = map[string]bool{
+	http.MethodGet + " /api/v2/clusters":                true,
+	http.MethodGet + " /api/v2/health/risks":            true,
+	http.MethodPost + " /api/v2/clusters/issues/search": true,
+}
+
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body, out any) error {
+	if !readOnlyEndpoints[method+" "+path] {
+		return fmt.Errorf("refusing %s %s: the exporter only makes read-only requests", method, path)
+	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)

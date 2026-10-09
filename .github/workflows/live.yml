@@ -1,0 +1,32 @@
+name: live
+# Runs the read-only tests against the real Komodor API. Manual only: never on pull_request or push, so
+# nothing outside the maintainer's explicit run can use the API key. The client refuses any request that
+# is not one of three read endpoints (internal/komodor/client.go readOnlyEndpoints).
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency: live-api
+jobs:
+  live:
+    if: github.repository == 'davidcollom/komodor-metrics-exporter'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: go.mod}
+      - name: Read-only live tests
+        env:
+          KOMODOR_API_KEY: ${{ secrets.KOMODOR_API_KEY }}
+        run: |
+          if [ -z "$KOMODOR_API_KEY" ]; then echo "KOMODOR_API_KEY secret is not set"; exit 1; fi
+          set +e
+          go test -tags live -run Live -count=1 -v -timeout 15m ./internal/komodor/ > "$RUNNER_TEMP/live.log" 2>&1
+          rc=$?
+          # Logs of a public repository are public, and cluster names identify customers. The tests only
+          # print numbers and status codes, but as a second guard the raw output is never shown: only lines
+          # the tests marked as safe, test results, and the tests' own numeric failure messages.
+          grep -E '^(live: |--- (PASS|FAIL|SKIP)|ok |FAIL|PASS)|^ +live_test\.go:[0-9]+: ' "$RUNNER_TEMP/live.log" || true
+          rm -f "$RUNNER_TEMP/live.log"
+          exit $rc

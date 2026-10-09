@@ -365,3 +365,56 @@ func TestGatewayTimeoutIsATypedTimeoutError(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestOnlyReadEndpointsAreAllowed(t *testing.T) {
+	var hit atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit.Add(1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := noRetryClient(srv.URL)
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodDelete, "/api/v2/users/someone"},
+		{http.MethodPost, "/api/v2/rbac/roles"},
+		{http.MethodPut, "/api/v2/health/risks/123"},
+		{http.MethodPost, "/api/v2/users"},
+		{http.MethodGet, "/api/v2/users"},
+		{http.MethodGet, "/api/v2/audit-log"},
+		{http.MethodPost, "/api/v2/clusters"},
+		{http.MethodDelete, "/api/v2/clusters"},
+		{http.MethodPut, "/api/v2/clusters/issues/search"},
+	} {
+		err := c.do(context.Background(), tc.method, tc.path, nil, nil, &struct{}{})
+		if err == nil || !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("%s %s was not refused: %v", tc.method, tc.path, err)
+		}
+	}
+	if hit.Load() != 0 {
+		t.Fatalf("%d refused requests still reached the server", hit.Load())
+	}
+}
+
+func TestTheThreeReadEndpointsStillWork(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		_, _ = w.Write([]byte(`{"totalResults":1,"data":{"clusters":[],"issues":[]}}`))
+	}))
+	defer srv.Close()
+	c := noRetryClient(srv.URL)
+	ctx := context.Background()
+	if _, err := c.Clusters(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RiskCount(ctx, RiskFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Issues(ctx, "c", "node-issue", []string{"open"}, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"GET /api/v2/clusters", "GET /api/v2/health/risks", "POST /api/v2/clusters/issues/search"}
+	if strings.Join(paths, ",") != strings.Join(want, ",") {
+		t.Fatalf("requests = %v, want %v", paths, want)
+	}
+}
