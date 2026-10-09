@@ -1,0 +1,31 @@
+# Run from this directory: KOMODOR_API_KEY=... docker compose up --build
+# Grafana http://localhost:3000 (no login), Prometheus http://localhost:9091, exporter http://localhost:9092/metrics
+services:
+  exporter:
+    build:
+      context: ..
+      dockerfile: demo/Dockerfile
+    environment:
+      KOMODOR_API_KEY: ${KOMODOR_API_KEY:?set KOMODOR_API_KEY}
+      KOMODOR_POLL_INTERVAL: 1m
+      KOMODOR_LOG_LEVEL: ${KOMODOR_LOG_LEVEL:-info}
+    ports: ["9092:9090"]
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9091:9090"]
+    depends_on: [exporter]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus]

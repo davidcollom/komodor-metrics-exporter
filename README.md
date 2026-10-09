@@ -77,6 +77,16 @@ Structured logs (JSON by default) go to stderr. At `--log-level debug` every API
 docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metrics-exporter
 ```
 
+## Demo stack
+
+`demo/` has a Docker Compose stack that builds the exporter from source and runs it with Prometheus and Grafana, with the dashboard already provisioned:
+
+```sh
+cd demo && KOMODOR_API_KEY=... docker compose up --build
+```
+
+Grafana is at http://localhost:3000 (no login), Prometheus at http://localhost:9091 and the exporter's `/metrics` at http://localhost:9092/metrics. It polls every minute, so give the first poll a moment. `docker compose down -v` removes it.
+
 ## Grafana dashboard
 
 Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) into Grafana and pick your Prometheus data source. It shows clusters, risks by status, severity, cluster and check type, open issues, issues closed per hour, and exporter freshness.
