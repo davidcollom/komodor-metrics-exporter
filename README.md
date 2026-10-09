@@ -82,7 +82,7 @@ docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metri
 Released versions are published as an OCI chart (the chart version matches the release tag, without the `v`):
 
 ```sh
-helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --version 0.1.3 --set apiKey=...
+helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --version 0.1.4 --set apiKey=...
 ```
 
 The chart source is in [`deploy/helm/komodor-metrics-exporter`](deploy/helm/komodor-metrics-exporter). It takes the API key as a Secret and the exporter configuration as a ConfigMap, mounted and passed with `--config`:
@@ -101,6 +101,7 @@ helm install komodor-metrics-exporter deploy/helm/komodor-metrics-exporter \
   helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --set existingSecret=komodor-api
   ```
 - **Config:** everything under `config:` in [`values.yaml`](deploy/helm/komodor-metrics-exporter/values.yaml) is the exporter's config file, with the exporter's own defaults and every metric group on. Changing it rolls the pod. Use `env` to override a value with a `KOMODOR_*` variable.
+- **Chart docs:** the chart's own [README](deploy/helm/komodor-metrics-exporter/README.md), with a table of every value and an External Secrets example, ships in the package (`helm show readme`).
 - **Scraping:** the Service exposes `/metrics` on 9090. Set `serviceMonitor.enabled=true` if you run the Prometheus Operator.
 - It runs a single replica, non-root, with a read-only root filesystem. The chart has [unit tests](deploy/helm/komodor-metrics-exporter/tests) that run in CI with [helm-unittest](https://github.com/helm-unittest/helm-unittest).
 
