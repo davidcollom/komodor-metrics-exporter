@@ -105,7 +105,16 @@ func run(parent context.Context, v *viper.Viper) error {
 	for name := range v.GetStringMap("metrics") {
 		cfg[name] = v.GetBool("metrics." + name)
 	}
-	enabled, err := ParseEnabled(cfg, v.GetStringSlice("disable"))
+	// Viper splits an env string on whitespace only, so a comma list from KOMODOR_DISABLE needs its own split.
+	var disabled []string
+	for _, item := range v.GetStringSlice("disable") {
+		for _, name := range strings.Split(item, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				disabled = append(disabled, name)
+			}
+		}
+	}
+	enabled, err := ParseEnabled(cfg, disabled)
 	if err != nil {
 		return err
 	}
