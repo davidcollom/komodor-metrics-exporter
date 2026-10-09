@@ -129,3 +129,21 @@ Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) in
 ## Release
 
 Tag `vX.Y.Z`; GitHub Actions runs GoReleaser to publish binaries and the `ghcr.io` image.
+
+## Development
+
+```sh
+go run . --help          # run from the repo root
+go test -race ./...      # unit tests, no network needed
+```
+
+Layout:
+
+| Path | Purpose |
+|---|---|
+| `main.go` | Entry point; only calls `cmd.Execute` (the version is injected here by GoReleaser) |
+| `cmd/` | Cobra command, flags, Viper config and logging setup, and the HTTP server |
+| `internal/komodor/` | Komodor API client: retries, backoff, in-flight limits, request metrics |
+| `internal/collector/` | Polling and the Prometheus metrics, metric-group toggles and the issue filter |
+| `deploy/helm/` | Helm chart and its unit tests |
+| `dashboards/`, `demo/` | Grafana dashboard and the Docker Compose demo |

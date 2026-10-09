@@ -1,7 +1,12 @@
 package komodor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,5 +145,182 @@ func TestBackoffIsExponentialWithJitter(t *testing.T) {
 				t.Fatalf("attempt %d: %v outside [%v, %v]", attempt, got, want/2, want)
 			}
 		}
+	}
+}
+
+func noRetryClient(url string) *Client {
+	return NewClient(ClientOptions{BaseURL: url, APIKey: "k", Timeout: 5 * time.Second, Concurrency: 2, SlowConcurrency: 1, MaxRetries: 0}, prometheus.NewRegistry())
+}
+
+func TestRiskCountSendsFilters(t *testing.T) {
+	var got http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = *r.Clone(r.Context())
+		_, _ = w.Write([]byte(`{"totalResults":42}`))
+	}))
+	defer srv.Close()
+	n, err := noRetryClient(srv.URL).RiskCount(context.Background(), RiskFilter{
+		Statuses: []string{"open", "confirmed"}, Severity: "high", Cluster: "c1", CheckType: "missingPDB"})
+	if err != nil || n != 42 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	q := got.URL.Query()
+	if got.URL.Path != "/api/v2/health/risks" || got.Header.Get("X-API-KEY") != "k" {
+		t.Errorf("path %q key %q", got.URL.Path, got.Header.Get("X-API-KEY"))
+	}
+	for k, want := range map[string][]string{
+		"status": {"open", "confirmed"}, "severity": {"high"}, "clusterName": {"c1"}, "checkType": {"missingPDB"},
+		"pageSize": {"1"}, "offset": {"0"}, "impactGroupType": {"static", "dynamic", "realtime"},
+	} {
+		if fmt.Sprint(q[k]) != fmt.Sprint(want) {
+			t.Errorf("%s = %v, want %v", k, q[k], want)
+		}
+	}
+}
+
+func TestRiskCountOmitsEmptyFilters(t *testing.T) {
+	var q map[string][]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q = r.URL.Query()
+		_, _ = w.Write([]byte(`{"totalResults":1}`))
+	}))
+	defer srv.Close()
+	if _, err := noRetryClient(srv.URL).RiskCount(context.Background(), RiskFilter{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"status", "severity", "clusterName", "checkType"} {
+		if _, ok := q[k]; ok {
+			t.Errorf("%s sent although empty", k)
+		}
+	}
+}
+
+func TestClusters(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"a"},{"name":"b"}]}}`))
+	}))
+	defer srv.Close()
+	got, err := noRetryClient(srv.URL).Clusters(context.Background())
+	if err != nil || len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("got %v err %v", got, err)
+	}
+}
+
+func TestClustersSurfacesHTTPErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"Status":"Forbidden"}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+	_, err := noRetryClient(srv.URL).Clusters(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "Forbidden") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestInvalidJSONIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("not json")) }))
+	defer srv.Close()
+	if _, err := noRetryClient(srv.URL).Clusters(context.Background()); err == nil {
+		t.Fatal("want a decode error")
+	}
+}
+
+func TestIssuesPaginatesAndSendsTheQuery(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		page := int(b["pagination"].(map[string]any)["page"].(float64))
+		var issues []Issue
+		next := 0
+		if page == 0 {
+			issues, next = make([]Issue, 500), 1
+		} else {
+			issues = []Issue{{Summary: "tail"}, {Summary: "tail2"}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issues": issues}, "meta": map[string]any{"nextPage": next}})
+	}))
+	defer srv.Close()
+	from, to := time.Unix(1000, 0), time.Unix(2000, 0)
+	got, err := noRetryClient(srv.URL).Issues(context.Background(), "c1", "node-issue", []string{"open"}, from, to)
+	if err != nil || len(got) != 502 {
+		t.Fatalf("len=%d err=%v", len(got), err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want 2 pages", len(bodies))
+	}
+	b := bodies[0]
+	props := b["props"].(map[string]any)
+	if b["scope"].(map[string]any)["cluster"] != "c1" || props["type"] != "node-issue" ||
+		props["fromEpoch"].(float64) != 1000 || props["toEpoch"].(float64) != 2000 || fmt.Sprint(props["statuses"]) != "[open]" {
+		t.Errorf("request body = %v", b)
+	}
+}
+
+func TestIssuesStopsOnShortPageAndSurfacesErrors(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"data":{"issues":[{"summary":"x"}]},"meta":{"nextPage":5}}`))
+	}))
+	if got, err := noRetryClient(srv.URL).Issues(context.Background(), "c", "t", nil, time.Now(), time.Now()); err != nil || len(got) != 1 || calls != 1 {
+		t.Fatalf("got %v err %v calls %d", got, err, calls)
+	}
+	srv.Close()
+	if _, err := noRetryClient(srv.URL).Issues(context.Background(), "c", "t", nil, time.Now(), time.Now()); err == nil {
+		t.Fatal("want an error from a closed server")
+	}
+}
+
+func TestCancelledContextStopsQueuedRequests(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		_, _ = w.Write([]byte(`{"totalResults":1}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: 5 * time.Second, Concurrency: 1, SlowConcurrency: 1}, prometheus.NewRegistry())
+	go func() { _, _ = c.RiskCount(context.Background(), RiskFilter{Cluster: "c1"}) }() // takes the only slot
+	time.Sleep(100 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := c.RiskCount(ctx, RiskFilter{Cluster: "c1"}); err == nil {
+		t.Fatal("want the queued request to give up when its context ends")
+	}
+}
+
+func TestRetryAfterWinsOverTheBackoff(t *testing.T) {
+	resp := &http.Response{Header: http.Header{"Retry-After": []string{"3"}}, StatusCode: 429}
+	if got := jitterBackoff(time.Second, 15*time.Second, 0, resp); got != 3*time.Second {
+		t.Errorf("backoff = %v, want 3s from Retry-After", got)
+	}
+}
+
+func TestGiveUpWithoutAResponse(t *testing.T) {
+	_, err := giveUp(nil, errors.New("connection refused"), 3)
+	if err == nil || !strings.Contains(err.Error(), "3 attempt(s)") || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRetryLoggerWritesToSlog(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(old)
+	l := leveledLogger{}
+	l.Debug("d-msg", "k", "v")
+	l.Info("i-msg")
+	l.Warn("w-msg")
+	l.Error("e-msg")
+	for _, want := range []string{"level=DEBUG", "d-msg", "i-msg", "w-msg", "e-msg"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("log output missing %q: %s", want, buf.String())
+		}
+	}
+	if strings.Contains(buf.String(), "level=ERROR") {
+		t.Error("a retried failure must not log at error level")
 	}
 }

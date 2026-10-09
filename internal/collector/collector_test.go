@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -305,5 +306,163 @@ func TestPollRecordsFreshnessEvenWhenItFails(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(c.lastSuccess); got != 0 {
 		t.Errorf("last_success = %v, want 0 after only failures", got)
+	}
+}
+
+func TestRunPollsRepeatedlyUntilCancelled(t *testing.T) {
+	var polls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			polls.Add(1)
+		}
+		_, _ = w.Write([]byte(`{"totalResults":1,"data":{"clusters":[{"name":"c1"}],"issues":[]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	c := New(testClient(srv.URL, 4, 2, reg), 30*time.Millisecond, time.Hour, allEnabled(t), IssueFilter{}, reg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for (polls.Load() < 3 || testutil.ToFloat64(c.pollOK) != 1) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Checked before cancelling: a poll interrupted by the cancel is correctly counted as failed.
+	ok, lastSuccess := testutil.ToFloat64(c.pollOK), testutil.ToFloat64(c.lastSuccess)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after the context was cancelled")
+	}
+	if polls.Load() < 3 {
+		t.Fatalf("only %d polls ran", polls.Load())
+	}
+	if ok != 1 || lastSuccess == 0 {
+		t.Error("successful polls should set last_poll_success and last_success")
+	}
+}
+
+func TestFailedQueryKeepsItsPreviousValueAndPublishesTheRest(t *testing.T) {
+	var count atomic.Int32
+	count.Store(7)
+	var failResolved atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			_, _ = w.Write([]byte(`{"data":{"clusters":[]}}`))
+			return
+		}
+		if failResolved.Load() && slices.Equal(r.URL.Query()["status"], []string{"resolved"}) {
+			http.Error(w, "nope", http.StatusForbidden) // a 4xx is not retried, keeping the test fast
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"totalResults": count.Load()})
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "risks_by_check", "issues"})
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	count.Store(9)
+	failResolved.Store(true)
+	if err := c.collect(context.Background()); err == nil {
+		t.Fatal("the failed query should fail the poll")
+	}
+	if got := testutil.ToFloat64(c.risks.WithLabelValues("open", "high")); got != 9 {
+		t.Errorf("open/high = %v, want the new value 9", got)
+	}
+	if got := testutil.ToFloat64(c.risks.WithLabelValues("resolved", "high")); got != 7 {
+		t.Errorf("resolved/high = %v, want the previous value 7 kept", got)
+	}
+	c.poll(context.Background())
+	if testutil.ToFloat64(c.pollOK) != 0 || testutil.ToFloat64(c.scrapeErrors) != 1 {
+		t.Error("a failing poll should set last_poll_success=0 and count an error")
+	}
+}
+
+func TestClustersFailureFailsThePollButKeepsTheGauge(t *testing.T) {
+	var fail atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			http.Error(w, "nope", http.StatusForbidden)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"a"},{"name":"b"}]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_by_check", "risks_active", "issues"})
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fail.Store(true)
+	if err := c.collect(context.Background()); err == nil {
+		t.Fatal("want an error")
+	}
+	if got := testutil.ToFloat64(c.clusters); got != 2 {
+		t.Errorf("clusters = %v, want the previous 2 kept", got)
+	}
+}
+
+func TestAllGroupsDisabledMakesNoAPICalls(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls.Add(1) }))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, MetricNames)
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+	c.poll(context.Background())
+	if calls.Load() != 0 {
+		t.Errorf("%d API calls with every group disabled", calls.Load())
+	}
+	if testutil.ToFloat64(c.pollOK) != 1 {
+		t.Error("an empty poll is a successful poll")
+	}
+}
+
+func TestOldClosedIssuesAreForgotten(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			_, _ = w.Write([]byte(`{"data":{"clusters":["c1"]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"issues":[]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_by_check", "risks_active", "clusters"})
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+	c.seenClosed["stale"] = time.Now().Add(-3 * time.Hour)
+	c.seenClosed["fresh"] = time.Now()
+	if err := c.collectIssues(context.Background(), []string{"c1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.seenClosed["stale"]; ok {
+		t.Error("a closed issue older than the window should be pruned")
+	}
+	if _, ok := c.seenClosed["fresh"]; !ok {
+		t.Error("a recent closed issue must be kept for de-duplication")
+	}
+}
+
+func TestUnmatchedSkipsAreWarnedOnceNotFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issues":[]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_by_check", "risks_active", "clusters"})
+	f, _ := NewIssueFilter(nil, []string{"typo/node-issue"})
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, f, reg)
+	if err := c.collectIssues(context.Background(), []string{"real"}); err != nil {
+		t.Fatal(err)
+	}
+	if !c.warnedSkips {
+		t.Error("the unmatched skip entry should have been checked")
 	}
 }
