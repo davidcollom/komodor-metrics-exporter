@@ -5,7 +5,7 @@
     "komodor"
   ],
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "time": {
     "from": "now-3h",
     "to": "now"
@@ -20,13 +20,41 @@
         "query": "prometheus",
         "label": "Data source",
         "current": {}
+      },
+      {
+        "name": "cluster",
+        "type": "query",
+        "label": "Cluster",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values({__name__=~\"komodor_(reliability_risks_active|issues_open)\"}, cluster)",
+        "query": {
+          "query": "label_values({__name__=~\"komodor_(reliability_risks_active|issues_open)\"}, cluster)",
+          "refId": "cluster"
+        },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
       }
     ]
   },
   "panels": [
     {
-      "id": 1,
-      "title": "Clusters",
+      "id": 2,
+      "title": "Clusters (all)",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -78,8 +106,8 @@
       }
     },
     {
-      "id": 2,
-      "title": "Open risks",
+      "id": 3,
+      "title": "Active risks",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -98,7 +126,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(komodor_reliability_risks{status=\"open\"})",
+          "expr": "sum(komodor_reliability_risks_active{cluster=~\"$cluster\"})",
           "legendFormat": "",
           "instant": true,
           "range": false
@@ -135,8 +163,8 @@
       }
     },
     {
-      "id": 3,
-      "title": "High severity open risks",
+      "id": 4,
+      "title": "High severity active risks",
       "type": "stat",
       "datasource": {
         "type": "prometheus",
@@ -155,7 +183,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "komodor_reliability_risks{status=\"open\",severity=\"high\"}",
+          "expr": "sum(komodor_reliability_risks_active{severity=\"high\",cluster=~\"$cluster\"})",
           "legendFormat": "",
           "instant": true,
           "range": false
@@ -192,7 +220,7 @@
       }
     },
     {
-      "id": 4,
+      "id": 5,
       "title": "Open issues",
       "type": "stat",
       "datasource": {
@@ -212,7 +240,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(komodor_issues_open)",
+          "expr": "sum(komodor_issues_open{cluster=~\"$cluster\"})",
           "legendFormat": "",
           "instant": true,
           "range": false
@@ -249,7 +277,7 @@
       }
     },
     {
-      "id": 5,
+      "id": 6,
       "title": "Issues closed (range)",
       "type": "stat",
       "datasource": {
@@ -269,7 +297,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(increase(komodor_issues_closed_total[$__range])) or vector(0)",
+          "expr": "sum(increase(komodor_issues_closed_total{cluster=~\"$cluster\"}[$__range])) or vector(0)",
           "legendFormat": "",
           "instant": true,
           "range": false
@@ -302,7 +330,7 @@
       }
     },
     {
-      "id": 6,
+      "id": 7,
       "title": "Seconds since last poll",
       "type": "stat",
       "datasource": {
@@ -359,8 +387,8 @@
       }
     },
     {
-      "id": 7,
-      "title": "Risks by status",
+      "id": 8,
+      "title": "Risks by status (all clusters)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -385,7 +413,6 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1
@@ -407,8 +434,8 @@
       }
     },
     {
-      "id": 8,
-      "title": "Open + confirmed risks by severity",
+      "id": 9,
+      "title": "Active risks by severity",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -427,13 +454,12 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum by (severity) (komodor_reliability_risks{status=~\"open|confirmed\"})",
+          "expr": "sum by (severity) (komodor_reliability_risks_active{cluster=~\"$cluster\"})",
           "legendFormat": "{{severity}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1,
@@ -458,7 +484,7 @@
       }
     },
     {
-      "id": 9,
+      "id": 10,
       "title": "Active risks by cluster",
       "type": "timeseries",
       "datasource": {
@@ -478,13 +504,12 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum by (cluster) (komodor_reliability_risks_active)",
+          "expr": "sum by (cluster) (komodor_reliability_risks_active{cluster=~\"$cluster\"})",
           "legendFormat": "{{cluster}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1
@@ -506,8 +531,8 @@
       }
     },
     {
-      "id": 10,
-      "title": "Active risks by check type (top 10)",
+      "id": 11,
+      "title": "Active risks by check type, top 10 (all clusters)",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -532,7 +557,6 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1
@@ -554,7 +578,7 @@
       }
     },
     {
-      "id": 11,
+      "id": 12,
       "title": "Open issues by type",
       "type": "timeseries",
       "datasource": {
@@ -574,13 +598,12 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum by (type) (komodor_issues_open)",
+          "expr": "sum by (type) (komodor_issues_open{cluster=~\"$cluster\"})",
           "legendFormat": "{{type}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1,
@@ -605,7 +628,7 @@
       }
     },
     {
-      "id": 12,
+      "id": 13,
       "title": "Open issues by cluster",
       "type": "timeseries",
       "datasource": {
@@ -625,61 +648,12 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum by (cluster) (komodor_issues_open)",
+          "expr": "sum by (cluster) (komodor_issues_open{cluster=~\"$cluster\"})",
           "legendFormat": "{{cluster}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "custom": {
-            "fillOpacity": 15,
-            "lineWidth": 1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom",
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "id": 13,
-      "title": "Issues closed per hour",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 28,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "refId": "A",
-          "expr": "sum by (type) (increase(komodor_issues_closed_total[1h]))",
-          "legendFormat": "{{type}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1
@@ -702,6 +676,53 @@
     },
     {
       "id": 14,
+      "title": "Issues closed per hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (type) (increase(komodor_issues_closed_total{cluster=~\"$cluster\"}[1h]))",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 15,
       "title": "Clusters",
       "type": "timeseries",
       "datasource": {
@@ -727,7 +748,6 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
           "custom": {
             "fillOpacity": 15,
             "lineWidth": 1
@@ -747,6 +767,112 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 1,
+      "title": "Per-cluster breakdown (selected clusters)",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (cluster) (komodor_reliability_risks_active{severity=\"high\",cluster=~\"$cluster\"})",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "sum by (cluster) (komodor_reliability_risks_active{severity=\"medium\",cluster=~\"$cluster\"})",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "sum by (cluster) (komodor_reliability_risks_active{severity=\"low\",cluster=~\"$cluster\"})",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "sum by (cluster) (komodor_issues_open{cluster=~\"$cluster\"})",
+          "legendFormat": "",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "High risks",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "cluster",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true
+            },
+            "renameByName": {
+              "cluster": "Cluster",
+              "Value #A": "High risks",
+              "Value #B": "Medium risks",
+              "Value #C": "Low risks",
+              "Value #D": "Open issues"
+            }
+          }
+        }
+      ]
     }
   ]
 }

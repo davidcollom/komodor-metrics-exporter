@@ -89,7 +89,7 @@ Grafana is at http://localhost:3000 (no login), Prometheus at http://localhost:9
 
 ## Grafana dashboard
 
-Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) into Grafana and pick your Prometheus data source. It shows clusters, risks by status, severity, cluster and check type, open issues, issues closed per hour, and exporter freshness.
+Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) into Grafana and pick your Prometheus data source. A multi-select **Cluster** variable (default All) filters the per-cluster panels: active risks, risks by severity, open and closed issues, and a per-cluster breakdown table. Panels labelled "all clusters" (risks by status and by check type) are not per-cluster metrics, so the variable does not filter them. Exporter freshness is in the top row.
 
 ## Limits
 
