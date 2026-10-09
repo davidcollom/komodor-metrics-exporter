@@ -5,7 +5,7 @@
     "komodor"
   ],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "time": {
     "from": "now-3h",
     "to": "now"
@@ -417,7 +417,8 @@
         "defaults": {
           "custom": {
             "fillOpacity": 15,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -467,7 +468,8 @@
             "lineWidth": 1,
             "stacking": {
               "mode": "normal"
-            }
+            },
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -514,7 +516,8 @@
         "defaults": {
           "custom": {
             "fillOpacity": 15,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -561,7 +564,8 @@
         "defaults": {
           "custom": {
             "fillOpacity": 15,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -611,7 +615,8 @@
             "lineWidth": 1,
             "stacking": {
               "mode": "normal"
-            }
+            },
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -658,7 +663,8 @@
         "defaults": {
           "custom": {
             "fillOpacity": 15,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -705,7 +711,8 @@
         "defaults": {
           "custom": {
             "fillOpacity": 15,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "spanNulls": true
           }
         },
         "overrides": []
@@ -752,7 +759,8 @@
         "defaults": {
           "custom": {
             "fillOpacity": 15,
-            "lineWidth": 1
+            "lineWidth": 1,
+            "spanNulls": true
           }
         },
         "overrides": []
