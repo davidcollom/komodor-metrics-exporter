@@ -510,3 +510,104 @@ func TestPollTimeoutSaysToRaiseThePollInterval(t *testing.T) {
 		t.Errorf("a poll cut off by its interval should say how to fix it; log: %s", buf.String())
 	}
 }
+
+// riskServer answers account-wide risk queries with unscoped, and per-cluster ones with perCluster.
+func riskServer(unscoped int, perCluster map[string]int, clusterCalls *atomic.Int32) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			clusterCalls.Add(1)
+			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"},{"name":"c2"}]}}`))
+			return
+		}
+		cl := r.URL.Query().Get("clusterName")
+		switch {
+		case cl == "" && unscoped == 0:
+			http.Error(w, "<html>504 Gateway Time-out</html>", http.StatusGatewayTimeout)
+		case cl == "" && unscoped < 0:
+			http.Error(w, "forbidden", http.StatusForbidden)
+		case cl == "":
+			_ = json.NewEncoder(w).Encode(map[string]any{"totalResults": unscoped})
+		default:
+			n, ok := perCluster[cl]
+			if !ok {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"totalResults": n})
+		}
+	}))
+}
+
+func risksOnly(t *testing.T, srvURL string) (*Collector, *prometheus.Registry) {
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "risks_by_check", "issues"})
+	return New(testClient(srvURL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg), reg
+}
+
+func TestAccountWideTimeoutFallsBackToPerClusterSums(t *testing.T) {
+	var clusterCalls atomic.Int32
+	srv := riskServer(0, map[string]int{"c1": 5, "c2": 7}, &clusterCalls)
+	defer srv.Close()
+	c, _ := risksOnly(t, srv.URL)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatalf("the fallback should make the poll succeed: %v", err)
+	}
+	if got := testutil.ToFloat64(c.risks.WithLabelValues("open", "high")); got != 12 {
+		t.Errorf("open/high = %v, want 5+7 summed over the clusters", got)
+	}
+	if clusterCalls.Load() != 1 {
+		t.Errorf("cluster list fetched %d times, want once however many queries fall back", clusterCalls.Load())
+	}
+}
+
+func TestNoFallbackAndNoClusterListWhenTheQuerySucceeds(t *testing.T) {
+	var clusterCalls atomic.Int32
+	srv := riskServer(3, nil, &clusterCalls)
+	defer srv.Close()
+	c, _ := risksOnly(t, srv.URL)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if clusterCalls.Load() != 0 {
+		t.Errorf("clusters fetched %d times although no query timed out", clusterCalls.Load())
+	}
+}
+
+func TestOtherErrorsDoNotTriggerTheFallback(t *testing.T) {
+	var clusterCalls atomic.Int32
+	srv := riskServer(-1, map[string]int{"c1": 5, "c2": 7}, &clusterCalls)
+	defer srv.Close()
+	c, _ := risksOnly(t, srv.URL)
+	if err := c.collect(context.Background()); err == nil {
+		t.Fatal("a 403 is a real failure, not something to work around")
+	}
+	if clusterCalls.Load() != 0 {
+		t.Error("the fallback must only run for timeouts")
+	}
+}
+
+func TestFallbackFailureIsReported(t *testing.T) {
+	var clusterCalls atomic.Int32
+	srv := riskServer(0, map[string]int{"c1": 5}, &clusterCalls) // c2 is forbidden
+	defer srv.Close()
+	c, _ := risksOnly(t, srv.URL)
+	if err := c.collect(context.Background()); err == nil {
+		t.Fatal("a failing per-cluster query should fail the query")
+	}
+}
+
+func TestFallbackNeedsTheClusterList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		http.Error(w, "timeout", http.StatusGatewayTimeout)
+	}))
+	defer srv.Close()
+	c, _ := risksOnly(t, srv.URL)
+	err := c.collect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cluster list") {
+		t.Fatalf("err = %v, want it to mention the failed cluster list", err)
+	}
+}

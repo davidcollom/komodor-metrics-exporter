@@ -166,14 +166,20 @@ func (c *Collector) collect(ctx context.Context) error {
 		slog.Debug("collected clusters", "count", len(clusters))
 	}
 
+	// Only needed if an account-wide risk query times out, so it is fetched lazily and at most once.
+	cl := &clusterList{fetch: c.api.Clusters}
+	if clusters != nil {
+		cl.once.Do(func() { cl.names = clusters })
+	}
+
 	type step struct {
 		name string
 		fn   func(context.Context) error
 	}
 	all := []step{
-		{MetricRisks, c.collectRiskCounts},
+		{MetricRisks, func(ctx context.Context) error { return c.collectRiskCounts(ctx, cl) }},
 		{MetricRisksActive, func(ctx context.Context) error { return c.collectActiveRisks(ctx, clusters) }},
-		{MetricRisksByCheck, c.collectRisksByCheck},
+		{MetricRisksByCheck, func(ctx context.Context) error { return c.collectRisksByCheck(ctx, cl) }},
 		{MetricIssues, func(ctx context.Context) error { return c.collectIssues(ctx, clusters) }},
 	}
 	var steps []step
@@ -206,10 +212,10 @@ func counts(n int, fn func(i int) (int, error)) (vals []int, errs []error) {
 	return vals, errs
 }
 
-func (c *Collector) collectRiskCounts(ctx context.Context) error {
+func (c *Collector) collectRiskCounts(ctx context.Context, cl *clusterList) error {
 	ns := len(riskSeverities)
 	vals, errs := counts(len(riskStatuses)*ns, func(i int) (int, error) {
-		return c.api.RiskCount(ctx, komodor.RiskFilter{Statuses: []string{riskStatuses[i/ns]}, Severity: riskSeverities[i%ns]})
+		return c.riskCount(ctx, cl, komodor.RiskFilter{Statuses: []string{riskStatuses[i/ns]}, Severity: riskSeverities[i%ns]})
 	})
 	for i, v := range vals {
 		if errs[i] == nil {
@@ -236,9 +242,9 @@ func (c *Collector) collectActiveRisks(ctx context.Context, clusters []string) e
 	return failed
 }
 
-func (c *Collector) collectRisksByCheck(ctx context.Context) error {
+func (c *Collector) collectRisksByCheck(ctx context.Context, cl *clusterList) error {
 	vals, errs := counts(len(komodor.CheckTypes), func(i int) (int, error) {
-		return c.api.RiskCount(ctx, komodor.RiskFilter{Statuses: activeStatuses, CheckType: komodor.CheckTypes[i]})
+		return c.riskCount(ctx, cl, komodor.RiskFilter{Statuses: activeStatuses, CheckType: komodor.CheckTypes[i]})
 	})
 	for i, v := range vals {
 		if errs[i] == nil {
@@ -328,4 +334,45 @@ func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, now ti
 		return open, nil
 	}
 	return append(open, closed...), nil
+}
+
+type clusterList struct {
+	once  sync.Once
+	fetch func(context.Context) ([]string, error)
+	names []string
+	err   error
+}
+
+func (l *clusterList) get(ctx context.Context) ([]string, error) {
+	l.once.Do(func() { l.names, l.err = l.fetch(ctx) })
+	return l.names, l.err
+}
+
+// riskCount asks for an account-wide count. On a large account that single query can run into the API's
+// gateway timeout, so if it times out the same filter is summed over each cluster instead: many small
+// queries in place of one huge one.
+func (c *Collector) riskCount(ctx context.Context, cl *clusterList, f komodor.RiskFilter) (int, error) {
+	n, err := c.api.RiskCount(ctx, f)
+	if err == nil || !komodor.IsTimeout(err) || ctx.Err() != nil {
+		return n, err
+	}
+	slog.Warn("account-wide risk query timed out; summing per cluster instead",
+		"statuses", f.Statuses, "severity", f.Severity, "check_type", f.CheckType, "err", err)
+	names, cerr := cl.get(ctx)
+	if cerr != nil {
+		return 0, fmt.Errorf("%w (and the cluster list for the per-cluster fallback failed: %v)", err, cerr)
+	}
+	vals, errs := counts(len(names), func(i int) (int, error) {
+		g := f
+		g.Cluster = names[i]
+		return c.api.RiskCount(ctx, g)
+	})
+	if e := errors.Join(errs...); e != nil {
+		return 0, e
+	}
+	total := 0
+	for _, v := range vals {
+		total += v
+	}
+	return total, nil
 }

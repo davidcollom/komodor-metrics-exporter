@@ -40,7 +40,7 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 
 ## Concurrency and slow queries
 
-In-flight requests are limited per attempt, not per call, so a request waiting in retry backoff does not hold a slot. Account-wide risk queries (no cluster filter: `risks` and `risks_by_check`) can take a minute or hit a gateway timeout on large accounts, so they use their own small pool (`--slow-concurrency`) and cannot starve the fast per-cluster calls. Up to `--concurrency` + `--slow-concurrency` requests can therefore be in flight at once. 5xx responses and network errors are retried with backoff, but a 504 is not, since the retry would just wait out the same timeout. A query that still fails keeps its previous value and the rest of its group is published.
+In-flight requests are limited per attempt, not per call, so a request waiting in retry backoff does not hold a slot. Account-wide risk queries (no cluster filter: `risks` and `risks_by_check`) can take a minute or hit a gateway timeout on large accounts, so they use their own small pool (`--slow-concurrency`) and cannot starve the fast per-cluster calls. Up to `--concurrency` + `--slow-concurrency` requests can therefore be in flight at once. 5xx responses and network errors are retried with backoff, but a 504 is not, since the retry would just wait out the same timeout. If an account-wide risk query times out (a 504 or a client timeout, which happens on accounts with a very large number of risks) the exporter sums the same count over each cluster instead, so the metric is still complete. A query that still fails keeps its previous value and the rest of its group is published.
 
 ## Choosing metrics
 

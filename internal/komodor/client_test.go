@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -322,5 +323,45 @@ func TestRetryLoggerWritesToSlog(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "level=ERROR") {
 		t.Error("a retried failure must not log at error level")
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return false }
+
+var _ net.Error = timeoutErr{}
+
+func TestIsTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"gateway timeout", &StatusError{Code: http.StatusGatewayTimeout}, true},
+		{"forbidden", &StatusError{Code: http.StatusForbidden}, false},
+		{"server error", &StatusError{Code: http.StatusInternalServerError}, false},
+		{"deadline exceeded", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), true},
+		{"network timeout", fmt.Errorf("wrapped: %w", timeoutErr{}), true},
+		{"other", errors.New("boom"), false},
+		{"nil", nil, false},
+	} {
+		if got := IsTimeout(tc.err); got != tc.want {
+			t.Errorf("%s: IsTimeout = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestGatewayTimeoutIsATypedTimeoutError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "<html>504</html>", http.StatusGatewayTimeout)
+	}))
+	defer srv.Close()
+	_, err := noRetryClient(srv.URL).RiskCount(context.Background(), RiskFilter{})
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != 504 || !IsTimeout(err) || !strings.Contains(err.Error(), "504") {
+		t.Fatalf("err = %v", err)
 	}
 }

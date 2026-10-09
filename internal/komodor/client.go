@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -84,9 +86,31 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, msg)
+		return &StatusError{Method: method, Path: path, Status: resp.Status, Code: resp.StatusCode, Body: string(msg)}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// StatusError is a non-200 response from the API.
+type StatusError struct {
+	Method, Path, Status, Body string
+	Code                       int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("%s %s: %s: %s", e.Method, e.Path, e.Status, e.Body)
+}
+
+// IsTimeout reports whether the API or the client gave up waiting on a query (a gateway timeout or a
+// client-side timeout), as opposed to rejecting it. A heavy account-wide query can time out when the same
+// question asked per cluster would be answered quickly.
+func IsTimeout(err error) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Code == http.StatusGatewayTimeout
+	}
+	var ne net.Error
+	return errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout())
 }
 
 // leveledLogger routes retryablehttp's own logging (retry decisions) into slog.
