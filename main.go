@@ -57,6 +57,7 @@ func newRootCmd() *cobra.Command {
 	f.String("api-url", "https://api.komodor.com", "Komodor API base URL")
 	f.Duration("request-timeout", 2*time.Minute, "timeout for each API request attempt; raise it for slow endpoints")
 	f.StringSlice("disable", nil, "metric groups to switch off: clusters, risks, risks_active, risks_by_check, issues (or set metrics.<group>: false in the config file)")
+	f.Duration("issues-window", time.Hour, "how far back to look for closed issues (max 48h); open issues always use the full 48h")
 	f.Int("max-retries", 2, "retries per request on 5xx (except 504), 429 and network errors; backoff is 1s, 2s, 4s, ...")
 	f.Int("concurrency", 8, "maximum concurrent API requests (cluster-scoped and issues calls)")
 	f.Int("slow-concurrency", 2, "maximum concurrent account-wide risk queries, which can take a minute or time out")
@@ -103,6 +104,11 @@ func run(parent context.Context, v *viper.Viper) error {
 		return fmt.Errorf("--poll-interval must be at least 30s, got %s", interval)
 	}
 
+	window := v.GetDuration("issues-window")
+	if window > maxIssueWindow || window < 2*interval {
+		return fmt.Errorf("--issues-window must be between 2x the poll interval (%s) and %s, got %s", 2*interval, maxIssueWindow, window)
+	}
+
 	cfg := map[string]bool{}
 	for name := range v.GetStringMap("metrics") {
 		cfg[name] = v.GetBool("metrics." + name)
@@ -126,7 +132,7 @@ func run(parent context.Context, v *viper.Viper) error {
 	col := NewCollector(NewClient(ClientOptions{
 		BaseURL: v.GetString("api-url"), APIKey: key, Timeout: v.GetDuration("request-timeout"),
 		Concurrency: v.GetInt("concurrency"), SlowConcurrency: v.GetInt("slow-concurrency"), MaxRetries: v.GetInt("max-retries"),
-	}, reg), interval, enabled, reg)
+	}, reg), interval, window, enabled, reg)
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -143,7 +149,7 @@ func run(parent context.Context, v *viper.Viper) error {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String(), "concurrency", v.GetInt("concurrency"), "slow_concurrency", v.GetInt("slow-concurrency"))
+	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String(), "concurrency", v.GetInt("concurrency"), "slow_concurrency", v.GetInt("slow-concurrency"), "issues_window", window.String())
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

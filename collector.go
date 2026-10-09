@@ -14,8 +14,9 @@ import (
 var riskStatuses = []string{"open", "confirmed", "resolved", "dismissed", "ignored", "manually_resolved"}
 var riskSeverities = []string{"high", "medium", "low"}
 
-// The issues API caps a query at a 2 day window, 7 days back.
-const issueWindow = 48 * time.Hour
+// The issues API caps a query at a 2 day window, 7 days back. Open issues are always read over the
+// full window so long-running ones stay in the gauge; only closed issues use the shorter --issues-window.
+const maxIssueWindow = 48 * time.Hour
 
 // Each name is both a config toggle and a collection step label.
 const (
@@ -59,6 +60,8 @@ type Collector struct {
 	interval time.Duration
 	enabled  map[string]bool
 
+	closedWindow time.Duration
+
 	clusters     prometheus.Gauge
 	risks        *prometheus.GaugeVec
 	risksActive  *prometheus.GaugeVec
@@ -74,12 +77,12 @@ type Collector struct {
 	firstIssues bool
 }
 
-func NewCollector(api *Client, interval time.Duration, enabled map[string]bool, reg prometheus.Registerer) *Collector {
+func NewCollector(api *Client, interval, closedWindow time.Duration, enabled map[string]bool, reg prometheus.Registerer) *Collector {
 	f := func(name, help string, labels ...string) *prometheus.GaugeVec {
 		return prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "komodor_" + name, Help: help}, labels)
 	}
 	c := &Collector{
-		api: api, interval: interval, enabled: enabled, seenClosed: map[string]time.Time{}, firstIssues: true,
+		api: api, interval: interval, closedWindow: closedWindow, enabled: enabled, seenClosed: map[string]time.Time{}, firstIssues: true,
 		clusters:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_clusters", Help: "Clusters connected to Komodor."}),
 		risks:        f("reliability_risks", "Reliability risks by status and severity.", "status", "severity"),
 		risksActive:  f("reliability_risks_active", "Open and confirmed reliability risks by cluster and severity.", "cluster", "severity"),
@@ -263,13 +266,12 @@ func (c *Collector) collectRisksByCheck(ctx context.Context) error {
 // previous value rather than failing the whole step, because one flaky cluster should not blank the rest.
 func (c *Collector) collectIssues(ctx context.Context, clusters []string) error {
 	now := time.Now()
-	from := now.Add(-issueWindow)
 	nt := len(IssueTypes)
 	results := make([][]Issue, len(clusters)*nt)
 	errs := make([]error, len(results))
 	_ = fanout(len(results), func(i int) error {
 		cl, typ := clusters[i/nt], IssueTypes[i%nt]
-		is, err := c.fetchIssues(ctx, cl, typ, from, now)
+		is, err := c.fetchIssues(ctx, cl, typ, now)
 		if err != nil {
 			errs[i] = fmt.Errorf("issues %s/%s: %w", cl, typ, err)
 			return nil
@@ -307,7 +309,7 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 		slog.Debug("collected issues", "cluster", cl, "type", typ, "open", open, "total", len(is))
 	}
 	for k, seen := range c.seenClosed {
-		if seen.Before(now.Add(-issueWindow - time.Hour)) {
+		if seen.Before(now.Add(-c.closedWindow - time.Hour)) {
 			delete(c.seenClosed, k)
 		}
 	}
@@ -317,20 +319,15 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 	return failed
 }
 
-// fetchIssues asks for open and closed together. If that fails it retries per status, because a server
-// error on one side (seen as a persistent 500 on a single cluster) should not hide the other. Open
-// issues are the gauge, so a failure there is an error; a failure fetching only closed issues is logged.
-func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, from, to time.Time) ([]Issue, error) {
-	is, err := c.api.Issues(ctx, cluster, typ, []string{"open", "closed"}, from, to)
-	if err == nil {
-		return is, nil
-	}
-	slog.Warn("combined issues query failed, retrying per status", "cluster", cluster, "type", typ, "err", err)
-	open, err := c.api.Issues(ctx, cluster, typ, []string{"open"}, from, to)
+// fetchIssues reads open and closed issues in separate calls: open over the full window (few rows), closed
+// over the short window (the bulk of the rows). A failure fetching only closed issues is logged and the
+// open issues are still reported, because the open gauge is the more valuable of the two.
+func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, now time.Time) ([]Issue, error) {
+	open, err := c.api.Issues(ctx, cluster, typ, []string{"open"}, now.Add(-maxIssueWindow), now)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
-	closed, err := c.api.Issues(ctx, cluster, typ, []string{"closed"}, from, to)
+	closed, err := c.api.Issues(ctx, cluster, typ, []string{"closed"}, now.Add(-c.closedWindow), now)
 	if err != nil {
 		slog.Warn("closed issues unavailable; open issues still reported", "cluster", cluster, "type", typ, "err", err)
 		return open, nil

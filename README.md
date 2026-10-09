@@ -26,6 +26,7 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 | `--api-url` | `https://api.komodor.com` | |
 | `--disable` | none | Metric groups to switch off, comma-separated (`KOMODOR_DISABLE`) |
 | `--max-retries` | `2` | Retries per request on 5xx (not 504), 429 and network errors, with exponential, jittered backoff (1s, 2s, 4s, ... up to 15s) |
+| `--issues-window` | `1h` | How far back to look for closed issues (at least 2x the poll interval, max 48h). Open issues always use 48h |
 | `--concurrency` | `8` | Maximum concurrent cluster-scoped and issues requests |
 | `--slow-concurrency` | `2` | Maximum concurrent account-wide risk queries (a separate pool, see below) |
 | `--poll-interval` | `5m` | Minimum `30s`. A poll is cancelled if it runs longer than this |
@@ -67,7 +68,7 @@ Import [`dashboards/komodor-platform.json`](dashboards/komodor-platform.json) in
 
 ## Limits
 
-- The issues API only looks back 2 days per query and returns no issue ID. Issues open for more than 2 days are not counted in `komodor_issues_open`, and closed issues are deduplicated on cluster, type, start time and summary, so `komodor_issues_closed_total` is approximate. Closed issues present at startup are not counted.
+- Closed issues are only seen within `--issues-window` (default 1h), so one that closes after being open for longer than that may be missed if the API filters on start time rather than end time; raise the window if you see gaps. The issues API only looks back 2 days per query and returns no issue ID. Issues open for more than 2 days are not counted in `komodor_issues_open`, and closed issues are deduplicated on cluster, type, start time and summary, so `komodor_issues_closed_total` is approximate. Closed issues present at startup are not counted.
 - Risk metrics come from `totalResults` on one-row pages, so no risks are paged. Issues have no total, so they are paged per cluster and type (one call covers open and closed), and API calls per poll grow with cluster count. Steps run concurrently, capped by `--concurrency`.
 - Failed API calls are retried up to 4 times with backoff (429 and 5xx), so a briefly rate-limited poll usually still completes.
 - History starts when the exporter does; nothing is backfilled.

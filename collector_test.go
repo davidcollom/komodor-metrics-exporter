@@ -40,12 +40,19 @@ func fakeAPI(closed *[]Issue) *httptest.Server {
 		case "/api/v2/clusters/issues/search":
 			var b struct {
 				Scope struct{ Cluster string }
-				Props struct{ Type string }
+				Props struct {
+					Type     string
+					Statuses []string
+				}
 			}
 			_ = json.NewDecoder(r.Body).Decode(&b)
 			is := []Issue{}
 			if b.Scope.Cluster == "c1" && b.Props.Type == "availability" {
-				is = append([]Issue{{Type: "availability", Status: "open", StartTime: 1, Summary: "a"}}, *closed...)
+				if b.Props.Statuses[0] == "open" {
+					is = []Issue{{Type: "availability", Status: "open", StartTime: 1, Summary: "a"}}
+				} else {
+					is = *closed
+				}
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"issues": is}})
 		default:
@@ -59,7 +66,7 @@ func TestCollect(t *testing.T) {
 	srv := fakeAPI(&closed)
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, allEnabled(t), reg)
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, allEnabled(t), reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
@@ -159,7 +166,7 @@ func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "issues"})
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, enabled, reg)
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +257,7 @@ func TestIssuesFallBackPerStatus(t *testing.T) {
 		}
 		var b struct{ Props struct{ Statuses []string } }
 		_ = json.NewDecoder(r.Body).Decode(&b)
-		if len(b.Props.Statuses) != 1 || b.Props.Statuses[0] == "closed" {
+		if b.Props.Statuses[0] == "closed" {
 			http.Error(w, `{"Error":"Something went wrong"}`, http.StatusInternalServerError)
 			return
 		}
@@ -260,7 +267,7 @@ func TestIssuesFallBackPerStatus(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
 	api := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: time.Second, Concurrency: 4, SlowConcurrency: 1}, reg)
-	c := NewCollector(api, time.Minute, enabled, reg)
+	c := NewCollector(api, time.Minute, time.Hour, enabled, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatalf("closed-side failure should not fail the poll: %v", err)
 	}
@@ -277,5 +284,41 @@ func TestBackoffIsExponentialWithJitter(t *testing.T) {
 				t.Fatalf("attempt %d: %v outside [%v, %v]", attempt, got, want/2, want)
 			}
 		}
+	}
+}
+
+func TestIssueWindows(t *testing.T) {
+	from := map[string]int64{}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
+			return
+		}
+		var b struct {
+			Props struct {
+				Statuses  []string
+				FromEpoch int64
+			}
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		mu.Lock()
+		from[b.Props.Statuses[0]] = b.Props.FromEpoch
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"data":{"issues":[]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, reg)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	if d := now - from["closed"]; d < 3590 || d > 3610 {
+		t.Errorf("closed window = %ds, want ~1h", d)
+	}
+	if d := now - from["open"]; d < 48*3600-10 || d > 48*3600+10 {
+		t.Errorf("open window = %ds, want ~48h", d)
 	}
 }
