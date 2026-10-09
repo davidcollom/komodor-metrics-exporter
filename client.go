@@ -25,23 +25,32 @@ type Client struct {
 	http    *http.Client
 }
 
-func NewClient(baseURL, apiKey string, timeout time.Duration, concurrency, slowConcurrency int, reg prometheus.Registerer) *Client {
+type ClientOptions struct {
+	BaseURL, APIKey string
+	Timeout         time.Duration
+	Concurrency     int
+	SlowConcurrency int
+	MaxRetries      int
+}
+
+func NewClient(o ClientOptions, reg prometheus.Registerer) *Client {
 	hist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "komodor_exporter_api_request_duration_seconds", Help: "Duration of each Komodor API attempt (retries counted separately).",
 		Buckets: durationBuckets}, []string{"endpoint", "code"})
 	reg.MustRegister(hist)
 	rc := retryablehttp.NewClient()
-	rc.RetryMax = 4
+	rc.RetryMax = o.MaxRetries
 	rc.RetryWaitMin = 1 * time.Second
 	rc.RetryWaitMax = 15 * time.Second
 	rc.Logger = leveledLogger{}
 	rc.CheckRetry = retryPolicy
-	rc.HTTPClient.Timeout = timeout
+	rc.ErrorHandler = giveUp
+	rc.HTTPClient.Timeout = o.Timeout
 	rc.HTTPClient.Transport = loggingTransport{
 		next: http.DefaultTransport, hist: hist,
-		sem: make(chan struct{}, max(concurrency, 1)), slowSem: make(chan struct{}, max(slowConcurrency, 1)),
+		sem: make(chan struct{}, max(o.Concurrency, 1)), slowSem: make(chan struct{}, max(o.SlowConcurrency, 1)),
 	}
-	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient()}
+	return &Client{baseURL: o.BaseURL, apiKey: o.APIKey, http: rc.StandardClient()}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body, out any) error {
@@ -95,6 +104,16 @@ func retryPolicy(ctx context.Context, resp *http.Response, err error) (bool, err
 		return false, nil
 	}
 	return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+}
+
+// giveUp keeps the last response body in the error; the library's default drops it, which hides why an API call keeps failing.
+func giveUp(resp *http.Response, err error, tries int) (*http.Response, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("giving up after %d attempt(s): %w", tries, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	return nil, fmt.Errorf("giving up after %d attempt(s): %s: %s", tries, resp.Status, bytes.TrimSpace(body))
 }
 
 type slowKey struct{}
