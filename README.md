@@ -94,7 +94,12 @@ helm install komodor-metrics-exporter deploy/helm/komodor-metrics-exporter \
   --set config.metrics.risks_by_check=false
 ```
 
-- **API key:** set `apiKey` and the chart creates the Secret, or point `existingSecret` (and `existingSecretKey`, default `api-key`) at one you manage. The key never goes into the ConfigMap.
+- **API key:** set `apiKey` and the chart creates the Secret, or point `existingSecret` (and `existingSecretKey`, default `api-key`) at one you manage. The key never goes into the ConfigMap. With `existingSecret` set the chart creates no Secret and ignores `apiKey`, so it works with anything that produces a Kubernetes Secret (External Secrets Operator, Sealed Secrets, SOPS, Vault injector, a plain `kubectl create secret`):
+
+  ```sh
+  kubectl create secret generic komodor-api --from-literal=api-key=...
+  helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --set existingSecret=komodor-api
+  ```
 - **Config:** everything under `config:` in [`values.yaml`](deploy/helm/komodor-metrics-exporter/values.yaml) is the exporter's config file, with the exporter's own defaults and every metric group on. Changing it rolls the pod. Use `env` to override a value with a `KOMODOR_*` variable.
 - **Scraping:** the Service exposes `/metrics` on 9090. Set `serviceMonitor.enabled=true` if you run the Prometheus Operator.
 - It runs a single replica, non-root, with a read-only root filesystem. The chart has [unit tests](deploy/helm/komodor-metrics-exporter/tests) that run in CI with [helm-unittest](https://github.com/helm-unittest/helm-unittest).

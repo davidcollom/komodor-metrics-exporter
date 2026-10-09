@@ -5,7 +5,7 @@ image:
 
 # The Komodor API key. Set exactly one of these.
 apiKey: ""                 # the chart creates a Secret from this value
-existingSecret: ""         # or name an existing Secret
+existingSecret: ""         # or name an existing Secret (External Secrets, Sealed Secrets, ...); apiKey is then ignored
 existingSecretKey: api-key # key inside existingSecret (the chart-made Secret uses this key too)
 
 # Rendered into a ConfigMap and passed with --config. These are the exporter's defaults, so an empty
