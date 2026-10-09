@@ -1,64 +1,28 @@
-package main
+package collector
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/davidcollom/komodor-metrics-exporter/internal/komodor"
 )
 
 var riskStatuses = []string{"open", "confirmed", "resolved", "dismissed", "ignored", "manually_resolved"}
 var riskSeverities = []string{"high", "medium", "low"}
 
-// The issues API caps a query at a 2 day window, 7 days back. Open issues are always read over the
-// full window so long-running ones stay in the gauge; only closed issues use the shorter --issues-window.
-const maxIssueWindow = 48 * time.Hour
-
-// Each name is both a config toggle and a collection step label.
-const (
-	MetricClusters     = "clusters"
-	MetricRisks        = "risks"
-	MetricRisksActive  = "risks_active"
-	MetricRisksByCheck = "risks_by_check"
-	MetricIssues       = "issues"
-)
-
-var MetricNames = []string{MetricClusters, MetricRisks, MetricRisksActive, MetricRisksByCheck, MetricIssues}
-
-// ParseEnabled starts with everything on, applies explicit config values, then the disabled list.
-func ParseEnabled(cfg map[string]bool, disabled []string) (map[string]bool, error) {
-	out := map[string]bool{}
-	for _, n := range MetricNames {
-		out[n] = true
-	}
-	set := func(name string, on bool) error {
-		if _, ok := out[name]; !ok {
-			return fmt.Errorf("unknown metric group %q, want one of %v", name, MetricNames)
-		}
-		out[name] = on
-		return nil
-	}
-	for n, on := range cfg {
-		if err := set(n, on); err != nil {
-			return nil, err
-		}
-	}
-	for _, n := range disabled {
-		if err := set(n, false); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
+// MaxIssueWindow is the longest span the issues API accepts (2 days, no further back than 7). Open issues
+// are always read over the full window so long-running ones stay in the gauge; only closed issues use
+// the shorter --issues-window.
+const MaxIssueWindow = 48 * time.Hour
 
 type Collector struct {
-	api      *Client
+	api      *komodor.Client
 	interval time.Duration
 	enabled  map[string]bool
 
@@ -83,7 +47,7 @@ type Collector struct {
 	firstIssues bool
 }
 
-func NewCollector(api *Client, interval, closedWindow time.Duration, enabled map[string]bool, filter IssueFilter, reg prometheus.Registerer) *Collector {
+func New(api *komodor.Client, interval, closedWindow time.Duration, enabled map[string]bool, filter IssueFilter, reg prometheus.Registerer) *Collector {
 	f := func(name, help string, labels ...string) *prometheus.GaugeVec {
 		return prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "komodor_" + name, Help: help}, labels)
 	}
@@ -98,7 +62,7 @@ func NewCollector(api *Client, interval, closedWindow time.Duration, enabled map
 			Name: "komodor_issues_closed_total", Help: "Issues observed closing since the exporter started."}, []string{"cluster", "type"}),
 		stepDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "komodor_exporter_collection_step_duration_seconds", Help: "Duration of each collection step.",
-			Buckets: durationBuckets}, []string{"step"}),
+			Buckets: komodor.DurationBuckets}, []string{"step"}),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "komodor_exporter_errors_total", Help: "Failed collection attempts."}),
 		lastPoll:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_poll_timestamp_seconds", Help: "Unix time the last poll finished, successful or not."}),
 		pollOK:       prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_poll_success", Help: "1 if the last poll fully succeeded, 0 if any part failed."}),
@@ -240,7 +204,7 @@ func counts(n int, fn func(i int) (int, error)) (vals []int, errs []error) {
 func (c *Collector) collectRiskCounts(ctx context.Context) error {
 	ns := len(riskSeverities)
 	vals, errs := counts(len(riskStatuses)*ns, func(i int) (int, error) {
-		return c.api.RiskCount(ctx, RiskFilter{Statuses: []string{riskStatuses[i/ns]}, Severity: riskSeverities[i%ns]})
+		return c.api.RiskCount(ctx, komodor.RiskFilter{Statuses: []string{riskStatuses[i/ns]}, Severity: riskSeverities[i%ns]})
 	})
 	for i, v := range vals {
 		if errs[i] == nil {
@@ -253,7 +217,7 @@ func (c *Collector) collectRiskCounts(ctx context.Context) error {
 func (c *Collector) collectActiveRisks(ctx context.Context, clusters []string) error {
 	ns := len(riskSeverities)
 	vals, errs := counts(len(clusters)*ns, func(i int) (int, error) {
-		return c.api.RiskCount(ctx, RiskFilter{Statuses: activeStatuses, Cluster: clusters[i/ns], Severity: riskSeverities[i%ns]})
+		return c.api.RiskCount(ctx, komodor.RiskFilter{Statuses: activeStatuses, Cluster: clusters[i/ns], Severity: riskSeverities[i%ns]})
 	})
 	failed := errors.Join(errs...)
 	if failed == nil {
@@ -268,12 +232,12 @@ func (c *Collector) collectActiveRisks(ctx context.Context, clusters []string) e
 }
 
 func (c *Collector) collectRisksByCheck(ctx context.Context) error {
-	vals, errs := counts(len(CheckTypes), func(i int) (int, error) {
-		return c.api.RiskCount(ctx, RiskFilter{Statuses: activeStatuses, CheckType: CheckTypes[i]})
+	vals, errs := counts(len(komodor.CheckTypes), func(i int) (int, error) {
+		return c.api.RiskCount(ctx, komodor.RiskFilter{Statuses: activeStatuses, CheckType: komodor.CheckTypes[i]})
 	})
 	for i, v := range vals {
 		if errs[i] == nil {
-			c.risksByCheck.WithLabelValues(CheckTypes[i]).Set(float64(v))
+			c.risksByCheck.WithLabelValues(komodor.CheckTypes[i]).Set(float64(v))
 		}
 	}
 	return errors.Join(errs...)
@@ -290,7 +254,7 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 			slog.Warn("skip-issues entry matches no cluster", "entry", s)
 		}
 	}
-	results := make([][]Issue, len(pairs))
+	results := make([][]komodor.Issue, len(pairs))
 	errs := make([]error, len(pairs))
 	_ = fanout(len(pairs), func(i int) error {
 		cl, typ := pairs[i][0], pairs[i][1]
@@ -348,8 +312,8 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 // fetchIssues reads open and closed issues in separate calls: open over the full window (few rows), closed
 // over the short window (the bulk of the rows). A failure fetching only closed issues is logged and the
 // open issues are still reported, because the open gauge is the more valuable of the two.
-func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, now time.Time) ([]Issue, error) {
-	open, err := c.api.Issues(ctx, cluster, typ, []string{"open"}, now.Add(-maxIssueWindow), now)
+func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, now time.Time) ([]komodor.Issue, error) {
+	open, err := c.api.Issues(ctx, cluster, typ, []string{"open"}, now.Add(-MaxIssueWindow), now)
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)
 	}
@@ -359,67 +323,4 @@ func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, now ti
 		return open, nil
 	}
 	return append(open, closed...), nil
-}
-
-// IssueFilter selects which cluster and issue-type pairs are queried. The issues API can fail for a
-// single pair (a server-side 500), so a known-bad pair can be skipped instead of failing every poll.
-type IssueFilter struct {
-	types []string
-	skips []skip
-}
-
-type skip struct{ raw, cluster, typ string }
-
-// NewIssueFilter takes issue types to select (empty means all) and skip entries of the form
-// cluster/type, where either side may be "*".
-func NewIssueFilter(types, skips []string) (IssueFilter, error) {
-	f := IssueFilter{types: types}
-	for _, t := range types {
-		if !slices.Contains(IssueTypes, t) {
-			return f, fmt.Errorf("unknown issue type %q, want one of %v", t, IssueTypes)
-		}
-	}
-	for _, s := range skips {
-		i := strings.LastIndex(s, "/")
-		if i <= 0 || i == len(s)-1 {
-			return f, fmt.Errorf("invalid skip-issues entry %q, want cluster/type (either may be *)", s)
-		}
-		sk := skip{raw: s, cluster: s[:i], typ: s[i+1:]}
-		if sk.typ != "*" && !slices.Contains(IssueTypes, sk.typ) {
-			return f, fmt.Errorf("invalid skip-issues entry %q: unknown issue type %q, want one of %v or *", s, sk.typ, IssueTypes)
-		}
-		f.skips = append(f.skips, sk)
-	}
-	return f, nil
-}
-
-func (s skip) matches(cluster, typ string) bool {
-	return (s.cluster == "*" || s.cluster == cluster) && (s.typ == "*" || s.typ == typ)
-}
-
-func (f IssueFilter) Pairs(clusters []string) [][2]string {
-	types := f.types
-	if len(types) == 0 {
-		types = IssueTypes
-	}
-	var out [][2]string
-	for _, cl := range clusters {
-		for _, t := range types {
-			if !slices.ContainsFunc(f.skips, func(s skip) bool { return s.matches(cl, t) }) {
-				out = append(out, [2]string{cl, t})
-			}
-		}
-	}
-	return out
-}
-
-// UnmatchedSkips returns entries naming a cluster that does not exist, which is almost always a typo.
-func (f IssueFilter) UnmatchedSkips(clusters []string) []string {
-	var out []string
-	for _, s := range f.skips {
-		if s.cluster != "*" && !slices.Contains(clusters, s.cluster) {
-			out = append(out, s.raw)
-		}
-	}
-	return out
 }

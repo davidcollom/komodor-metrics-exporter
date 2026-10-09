@@ -1,4 +1,4 @@
-package main
+package komodor
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Some endpoints take minutes, so buckets run well past the usual HTTP range.
-var durationBuckets = []float64{.1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300}
+// DurationBuckets run well past the usual HTTP range because some endpoints take minutes.
+var DurationBuckets = []float64{.1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300}
 
 type Client struct {
 	baseURL string
@@ -37,7 +37,7 @@ type ClientOptions struct {
 func NewClient(o ClientOptions, reg prometheus.Registerer) *Client {
 	hist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "komodor_exporter_api_request_duration_seconds", Help: "Duration of each Komodor API attempt (retries counted separately).",
-		Buckets: durationBuckets}, []string{"endpoint", "code"})
+		Buckets: DurationBuckets}, []string{"endpoint", "code"})
 	reg.MustRegister(hist)
 	rc := retryablehttp.NewClient()
 	rc.RetryMax = o.MaxRetries
@@ -98,7 +98,6 @@ func (leveledLogger) Info(msg string, kv ...any)  { slog.Info(msg, kv...) }
 func (leveledLogger) Debug(msg string, kv ...any) { slog.Debug(msg, kv...) }
 func (leveledLogger) Warn(msg string, kv ...any)  { slog.Warn(msg, kv...) }
 
-// loggingTransport logs every attempt at debug; headers are never logged, so the API key stays out.
 // retryPolicy is the library default minus 504: the gateway gives up after about 60s, so a retry
 // would just hold another slot for another minute on a query that is too heavy.
 func retryPolicy(ctx context.Context, resp *http.Response, err error) (bool, error) {
@@ -130,7 +129,8 @@ func giveUp(resp *http.Response, err error, tries int) (*http.Response, error) {
 
 type slowKey struct{}
 
-// loggingTransport also enforces the in-flight limits. The limit is taken per attempt, not per call,
+// loggingTransport logs every attempt at debug (headers are never logged, so the API key stays out)
+// and also enforces the in-flight limits. The limit is taken per attempt, not per call,
 // so a request sleeping in retry backoff does not hold a slot. Account-wide risk queries are slow
 // and use their own small pool so they cannot starve the fast cluster-scoped calls.
 type loggingTransport struct {

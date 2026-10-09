@@ -1,4 +1,4 @@
-package main
+package collector
 
 import (
 	"context"
@@ -6,17 +6,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/davidcollom/komodor-metrics-exporter/internal/komodor"
 )
 
-func fakeAPI(closed *[]Issue) *httptest.Server {
+func testClient(url string, concurrency, slow int, reg prometheus.Registerer) *komodor.Client {
+	return komodor.NewClient(komodor.ClientOptions{BaseURL: url, APIKey: "k", Timeout: 10 * time.Second,
+		Concurrency: concurrency, SlowConcurrency: slow, MaxRetries: 4}, reg)
+}
+
+func fakeAPI(closed *[]komodor.Issue) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-API-KEY") != "k" {
 			http.Error(w, "no", http.StatusUnauthorized)
@@ -46,10 +51,10 @@ func fakeAPI(closed *[]Issue) *httptest.Server {
 				}
 			}
 			_ = json.NewDecoder(r.Body).Decode(&b)
-			is := []Issue{}
+			is := []komodor.Issue{}
 			if b.Scope.Cluster == "c1" && b.Props.Type == "availability" {
 				if b.Props.Statuses[0] == "open" {
-					is = []Issue{{Type: "availability", Status: "open", StartTime: 1, Summary: "a"}}
+					is = []komodor.Issue{{Type: "availability", Status: "open", StartTime: 1, Summary: "a"}}
 				} else {
 					is = *closed
 				}
@@ -62,11 +67,11 @@ func fakeAPI(closed *[]Issue) *httptest.Server {
 }
 
 func TestCollect(t *testing.T) {
-	closed := []Issue{{Type: "availability", Status: "closed", StartTime: 5, Summary: "old"}}
+	closed := []komodor.Issue{{Type: "availability", Status: "closed", StartTime: 5, Summary: "old"}}
 	srv := fakeAPI(&closed)
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, allEnabled(t), IssueFilter{}, reg)
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, allEnabled(t), IssueFilter{}, reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
@@ -94,48 +99,12 @@ func TestCollect(t *testing.T) {
 	check("open issues", testutil.ToFloat64(c.issuesOpen.WithLabelValues("c1", "availability")), 1)
 	check("closed after first poll", testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")), 0)
 
-	closed = append(closed, Issue{Type: "availability", Status: "closed", StartTime: 9, Summary: "new"})
+	closed = append(closed, komodor.Issue{Type: "availability", Status: "closed", StartTime: 9, Summary: "new"})
 	for range 2 {
 		if err := c.collect(ctx); err != nil {
 			t.Fatal(err)
 		}
 		check("closed after new issue", testutil.ToFloat64(c.issuesClosed.WithLabelValues("c1", "availability")), 1)
-	}
-}
-
-func TestClientRetries(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if calls++; calls < 3 {
-			http.Error(w, "busy", http.StatusTooManyRequests)
-			return
-		}
-		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
-	}))
-	defer srv.Close()
-	got, err := testClient(srv.URL, 1, 1, prometheus.NewRegistry()).Clusters(context.Background())
-	if err != nil || len(got) != 1 || calls != 3 {
-		t.Fatalf("got %v, err %v, calls %d", got, err, calls)
-	}
-}
-
-func TestConcurrencyLimit(t *testing.T) {
-	var inflight, peak atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		n := inflight.Add(1)
-		defer inflight.Add(-1)
-		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
-		}
-		time.Sleep(30 * time.Millisecond)
-		_, _ = w.Write([]byte(`{"totalResults":1}`))
-	}))
-	defer srv.Close()
-	c := testClient(srv.URL, 3, 1, prometheus.NewRegistry())
-	if err := fanout(12, func(int) error { _, err := c.RiskCount(context.Background(), RiskFilter{Cluster: "c1"}); return err }); err != nil {
-		t.Fatal(err)
-	}
-	if p := peak.Load(); p < 2 || p > 3 {
-		t.Fatalf("peak in-flight = %d, want 2..3", p)
 	}
 }
 
@@ -170,7 +139,7 @@ func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "issues"})
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -190,70 +159,7 @@ func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
 	}
 }
 
-func TestGatewayTimeoutIsNotRetried(t *testing.T) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		calls.Add(1)
-		http.Error(w, "timeout", http.StatusGatewayTimeout)
-	}))
-	defer srv.Close()
-	if _, err := testClient(srv.URL, 2, 1, prometheus.NewRegistry()).RiskCount(context.Background(), RiskFilter{}); err == nil {
-		t.Fatal("want error")
-	}
-	if n := calls.Load(); n != 1 {
-		t.Fatalf("calls = %d, want 1", n)
-	}
-}
-
-func TestSlowQueriesUseTheirOwnPool(t *testing.T) {
-	var slowNow, slowPeak, fastDone atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("clusterName") == "" {
-			n := slowNow.Add(1)
-			defer slowNow.Add(-1)
-			for p := slowPeak.Load(); n > p && !slowPeak.CompareAndSwap(p, n); p = slowPeak.Load() {
-			}
-			time.Sleep(150 * time.Millisecond)
-		} else {
-			fastDone.Add(1)
-		}
-		_, _ = w.Write([]byte(`{"totalResults":1}`))
-	}))
-	defer srv.Close()
-	c := testClient(srv.URL, 4, 1, prometheus.NewRegistry())
-	err := fanout(8, func(i int) error {
-		_, err := c.RiskCount(context.Background(), RiskFilter{Cluster: map[bool]string{true: "c1"}[i%2 == 0]})
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p := slowPeak.Load(); p != 1 {
-		t.Fatalf("account-wide peak in-flight = %d, want 1", p)
-	}
-	if fastDone.Load() != 4 {
-		t.Fatalf("fast calls = %d, want 4", fastDone.Load())
-	}
-}
-
-func testClient(url string, concurrency, slow int, reg prometheus.Registerer) *Client {
-	return NewClient(ClientOptions{BaseURL: url, APIKey: "k", Timeout: 10 * time.Second,
-		Concurrency: concurrency, SlowConcurrency: slow, MaxRetries: 4}, reg)
-}
-
-func TestFailureKeepsResponseBody(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "node data unavailable", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-	c := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: time.Second, Concurrency: 1, SlowConcurrency: 1, MaxRetries: 1}, prometheus.NewRegistry())
-	_, err := c.Clusters(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "node data unavailable") || !strings.Contains(err.Error(), "2 attempt") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestIssuesFallBackPerStatus(t *testing.T) {
+func TestClosedIssuesFailureStillReportsOpen(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v2/clusters" {
 			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
@@ -270,24 +176,13 @@ func TestIssuesFallBackPerStatus(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
-	api := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: time.Second, Concurrency: 4, SlowConcurrency: 1}, reg)
-	c := NewCollector(api, time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+	api := komodor.NewClient(komodor.ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: time.Second, Concurrency: 4, SlowConcurrency: 1}, reg)
+	c := New(api, time.Minute, time.Hour, enabled, IssueFilter{}, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatalf("closed-side failure should not fail the poll: %v", err)
 	}
 	if got := testutil.ToFloat64(c.issuesOpen.WithLabelValues("c1", "node-issue")); got != 1 {
 		t.Fatalf("open node-issue = %v, want 1", got)
-	}
-}
-
-func TestBackoffIsExponentialWithJitter(t *testing.T) {
-	for attempt, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second} {
-		for range 50 {
-			got := jitterBackoff(time.Second, 15*time.Second, attempt, nil)
-			if got < want/2 || got > want {
-				t.Fatalf("attempt %d: %v outside [%v, %v]", attempt, got, want/2, want)
-			}
-		}
 	}
 }
 
@@ -314,7 +209,7 @@ func TestIssueWindows(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +277,7 @@ func TestSkippedPairsAreNotQueried(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
 	f, _ := NewIssueFilter(nil, []string{"cluster-a/node-issue"})
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, f, reg)
+	c := New(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, f, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatalf("poll should succeed with the broken pair skipped: %v", err)
 	}
@@ -400,7 +295,7 @@ func TestPollRecordsFreshnessEvenWhenItFails(t *testing.T) {
 	}))
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(testClient(srv.URL, 2, 1, reg), time.Minute, time.Hour, allEnabled(t), IssueFilter{}, reg)
+	c := New(testClient(srv.URL, 2, 1, reg), time.Minute, time.Hour, allEnabled(t), IssueFilter{}, reg)
 	c.poll(context.Background())
 	if got := testutil.ToFloat64(c.lastPoll); time.Since(time.Unix(int64(got), 0)) > time.Minute || got == 0 {
 		t.Errorf("last_poll = %v, want a recent timestamp", got)
