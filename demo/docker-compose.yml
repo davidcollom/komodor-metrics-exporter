@@ -13,7 +13,7 @@ services:
     ports: ["9092:9090"]
 
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.15.0
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -22,7 +22,7 @@ services:
     depends_on: [exporter]
 
   grafana:
-    image: grafana/grafana:11.2.0
+    image: grafana/grafana:13.2.3
     environment:
       # A real login: with anonymous access Grafana answers 401 to /api/user/preferences on every page load.
       GF_SECURITY_ADMIN_USER: admin
