@@ -1,0 +1,33 @@
+# One combined pull request per ecosystem, weekly. Commit messages start with "chore:", which the
+# GoReleaser changelog filter (.goreleaser.yaml) excludes, so dependency bumps stay out of release notes.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: {interval: weekly, day: monday}
+    commit-message: {prefix: chore}
+    groups:
+      go-modules: {patterns: ["*"]}
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly, day: monday}
+    commit-message: {prefix: chore}
+    groups:
+      github-actions: {patterns: ["*"]}
+
+  # The release Dockerfile and the demo's multi-stage build.
+  - package-ecosystem: docker
+    directories: [/, /demo]
+    schedule: {interval: weekly, day: monday}
+    commit-message: {prefix: chore}
+    groups:
+      docker: {patterns: ["*"]}
+
+  # The demo stack's Prometheus and Grafana images.
+  - package-ecosystem: docker-compose
+    directory: /demo
+    schedule: {interval: weekly, day: monday}
+    commit-message: {prefix: chore}
+    groups:
+      docker-compose: {patterns: ["*"]}
