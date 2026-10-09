@@ -1,0 +1,23 @@
+version: 2
+project_name: komodor-metrics-exporter
+
+builds:
+  - env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X main.version={{.Version}}"]
+
+archives:
+  - formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+dockers_v2:
+  - images: [ghcr.io/davidcollom/komodor-metrics-exporter]
+    tags: ["{{.Version}}", latest]
+    platforms: [linux/amd64, linux/arm64]
+
+changelog:
+  filters:
+    exclude: ["^docs:", "^test:", "^chore:"]
