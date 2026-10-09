@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,6 +45,7 @@ func NewClient(o ClientOptions, reg prometheus.Registerer) *Client {
 	rc.RetryWaitMax = 15 * time.Second
 	rc.Logger = leveledLogger{}
 	rc.CheckRetry = retryPolicy
+	rc.Backoff = jitterBackoff
 	rc.ErrorHandler = giveUp
 	rc.HTTPClient.Timeout = o.Timeout
 	rc.HTTPClient.Transport = loggingTransport{
@@ -104,6 +106,16 @@ func retryPolicy(ctx context.Context, resp *http.Response, err error) (bool, err
 		return false, nil
 	}
 	return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+}
+
+// jitterBackoff is exponential (1s, 2s, 4s, ... up to the max) with 50-100% jitter, so concurrent
+// retries after a shared failure do not all land on the API together. Retry-After still wins.
+func jitterBackoff(minWait, maxWait time.Duration, attempt int, resp *http.Response) time.Duration {
+	if resp != nil && resp.Header.Get("Retry-After") != "" {
+		return retryablehttp.DefaultBackoff(minWait, maxWait, attempt, resp)
+	}
+	d := min(minWait<<attempt, maxWait)
+	return d/2 + rand.N(d/2+1)
 }
 
 // giveUp keeps the last response body in the error; the library's default drops it, which hides why an API call keeps failing.

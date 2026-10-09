@@ -269,7 +269,7 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 	errs := make([]error, len(results))
 	_ = fanout(len(results), func(i int) error {
 		cl, typ := clusters[i/nt], IssueTypes[i%nt]
-		is, err := c.api.Issues(ctx, cl, typ, []string{"open", "closed"}, from, now)
+		is, err := c.fetchIssues(ctx, cl, typ, from, now)
 		if err != nil {
 			errs[i] = fmt.Errorf("issues %s/%s: %w", cl, typ, err)
 			return nil
@@ -315,4 +315,25 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 		c.firstIssues = false
 	}
 	return failed
+}
+
+// fetchIssues asks for open and closed together. If that fails it retries per status, because a server
+// error on one side (seen as a persistent 500 on a single cluster) should not hide the other. Open
+// issues are the gauge, so a failure there is an error; a failure fetching only closed issues is logged.
+func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, from, to time.Time) ([]Issue, error) {
+	is, err := c.api.Issues(ctx, cluster, typ, []string{"open", "closed"}, from, to)
+	if err == nil {
+		return is, nil
+	}
+	slog.Warn("combined issues query failed, retrying per status", "cluster", cluster, "type", typ, "err", err)
+	open, err := c.api.Issues(ctx, cluster, typ, []string{"open"}, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	closed, err := c.api.Issues(ctx, cluster, typ, []string{"closed"}, from, to)
+	if err != nil {
+		slog.Warn("closed issues unavailable; open issues still reported", "cluster", cluster, "type", typ, "err", err)
+		return open, nil
+	}
+	return append(open, closed...), nil
 }

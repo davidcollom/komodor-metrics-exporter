@@ -241,3 +241,41 @@ func TestFailureKeepsResponseBody(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestIssuesFallBackPerStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
+			return
+		}
+		var b struct{ Props struct{ Statuses []string } }
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		if len(b.Props.Statuses) != 1 || b.Props.Statuses[0] == "closed" {
+			http.Error(w, `{"Error":"Something went wrong"}`, http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"issues":[{"type":"node-issue","status":"open","startTime":1,"summary":"x"}]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
+	api := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: time.Second, Concurrency: 4, SlowConcurrency: 1}, reg)
+	c := NewCollector(api, time.Minute, enabled, reg)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatalf("closed-side failure should not fail the poll: %v", err)
+	}
+	if got := testutil.ToFloat64(c.issuesOpen.WithLabelValues("c1", "node-issue")); got != 1 {
+		t.Fatalf("open node-issue = %v, want 1", got)
+	}
+}
+
+func TestBackoffIsExponentialWithJitter(t *testing.T) {
+	for attempt, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second} {
+		for range 50 {
+			got := jitterBackoff(time.Second, 15*time.Second, attempt, nil)
+			if got < want/2 || got > want {
+				t.Fatalf("attempt %d: %v outside [%v, %v]", attempt, got, want/2, want)
+			}
+		}
+	}
+}

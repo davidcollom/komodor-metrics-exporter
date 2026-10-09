@@ -25,7 +25,7 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
 | `--disable` | none | Metric groups to switch off, comma-separated (`KOMODOR_DISABLE`) |
-| `--max-retries` | `2` | Retries per request on 5xx (not 504), 429 and network errors, with 1s, 2s, 4s backoff |
+| `--max-retries` | `2` | Retries per request on 5xx (not 504), 429 and network errors, with exponential, jittered backoff (1s, 2s, 4s, ... up to 15s) |
 | `--concurrency` | `8` | Maximum concurrent cluster-scoped and issues requests |
 | `--slow-concurrency` | `2` | Maximum concurrent account-wide risk queries (a separate pool, see below) |
 | `--poll-interval` | `5m` | Minimum `30s`. A poll is cancelled if it runs longer than this |
