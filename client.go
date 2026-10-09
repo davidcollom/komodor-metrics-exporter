@@ -13,7 +13,11 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+// Some endpoints take minutes, so buckets run well past the usual HTTP range.
+var durationBuckets = []float64{.1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300}
 
 type Client struct {
 	baseURL string
@@ -21,14 +25,18 @@ type Client struct {
 	http    *http.Client
 }
 
-func NewClient(baseURL, apiKey string) *Client {
+func NewClient(baseURL, apiKey string, timeout time.Duration, reg prometheus.Registerer) *Client {
+	hist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name: "komodor_exporter_api_request_duration_seconds", Help: "Duration of each Komodor API attempt (retries counted separately).",
+		Buckets: durationBuckets}, []string{"endpoint", "code"})
+	reg.MustRegister(hist)
 	rc := retryablehttp.NewClient()
 	rc.RetryMax = 4
 	rc.RetryWaitMin = 1 * time.Second
 	rc.RetryWaitMax = 15 * time.Second
 	rc.Logger = leveledLogger{}
-	rc.HTTPClient.Timeout = 30 * time.Second
-	rc.HTTPClient.Transport = loggingTransport{http.DefaultTransport}
+	rc.HTTPClient.Timeout = timeout
+	rc.HTTPClient.Transport = loggingTransport{http.DefaultTransport, hist}
 	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient()}
 }
 
@@ -76,18 +84,24 @@ func (leveledLogger) Debug(msg string, kv ...any) { slog.Debug(msg, kv...) }
 func (leveledLogger) Warn(msg string, kv ...any)  { slog.Warn(msg, kv...) }
 
 // loggingTransport logs every attempt at debug; headers are never logged, so the API key stays out.
-type loggingTransport struct{ next http.RoundTripper }
+type loggingTransport struct {
+	next http.RoundTripper
+	hist *prometheus.HistogramVec
+}
 
 func (t loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	resp, err := t.next.RoundTrip(req)
-	attrs := []any{"method", req.Method, "url", req.URL.String(), "duration", time.Since(start).String()}
-	switch {
-	case err != nil:
+	elapsed := time.Since(start)
+	attrs := []any{"method", req.Method, "url", req.URL.String(), "duration", elapsed.String()}
+	code := "error"
+	if err != nil {
 		slog.Debug("api request failed", append(attrs, "err", err)...)
-	default:
+	} else {
+		code = strconv.Itoa(resp.StatusCode)
 		slog.Debug("api request", append(attrs, "status", resp.StatusCode)...)
 	}
+	t.hist.WithLabelValues(req.URL.Path, code).Observe(elapsed.Seconds())
 	return resp, err
 }
 

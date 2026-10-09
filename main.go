@@ -55,6 +55,7 @@ func newRootCmd() *cobra.Command {
 	f.StringVar(&cfgFile, "config", "", "optional config file (yaml/json/toml); flags and env override it")
 	f.String("api-key", "", "Komodor API key (prefer the KOMODOR_API_KEY env var; flags show in process listings)")
 	f.String("api-url", "https://api.komodor.com", "Komodor API base URL")
+	f.Duration("request-timeout", 2*time.Minute, "timeout for each API request attempt; raise it for slow endpoints")
 	f.Duration("poll-interval", 5*time.Minute, "how often to poll the API (minimum 30s)")
 	f.String("listen-addr", ":9090", "address serving /metrics and /healthz")
 	f.String("log-level", "info", "debug, info, warn or error; debug logs every API request")
@@ -100,7 +101,7 @@ func run(parent context.Context, v *viper.Viper) error {
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-	col := NewCollector(NewClient(v.GetString("api-url"), key), interval, reg)
+	col := NewCollector(NewClient(v.GetString("api-url"), key, v.GetDuration("request-timeout"), reg), interval, reg)
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -117,7 +118,7 @@ func run(parent context.Context, v *viper.Viper) error {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String())
+	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String())
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

@@ -11,6 +11,8 @@ Prometheus exporter for the [Komodor](https://komodor.com) public API. It polls 
 | `komodor_reliability_risks_active` | `cluster`, `check_type`, `severity` | Open + confirmed risks |
 | `komodor_issues_open` | `cluster`, `type` | See limits below |
 | `komodor_issues_closed_total` | `cluster`, `type` | Counter of issues seen closing since start |
+| `komodor_exporter_api_request_duration_seconds` | `endpoint`, `code` | Histogram per API attempt, buckets 0.1s to 300s |
+| `komodor_exporter_collection_step_duration_seconds` | `step` | Histogram per collection step (`clusters`, `risk_counts`, `active_risks`, `issues`) |
 | `komodor_exporter_errors_total`, `komodor_exporter_last_success_timestamp_seconds` | | Exporter health |
 
 ## Configuration
@@ -21,7 +23,8 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 |---|---|---|
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
-| `--poll-interval` | `5m` | Minimum `30s` |
+| `--poll-interval` | `5m` | Minimum `30s`. A poll is cancelled if it runs longer than this |
+| `--request-timeout` | `2m` | Timeout per API attempt; raise it for slow endpoints |
 | `--listen-addr` | `:9090` | Serves `/metrics` and `/healthz` |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `json` | `json` or `text` |

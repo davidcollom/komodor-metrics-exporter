@@ -60,11 +60,17 @@ func TestCollect(t *testing.T) {
 	closed := []Issue{{Type: "availability", StartTime: 5, Summary: "old"}}
 	srv := fakeAPI(t, &closed)
 	defer srv.Close()
-	c := NewCollector(NewClient(srv.URL, "k"), time.Minute, prometheus.NewRegistry())
+	reg := prometheus.NewRegistry()
+	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, reg), time.Minute, reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{"komodor_exporter_api_request_duration_seconds", "komodor_exporter_collection_step_duration_seconds"} {
+		if n, err := testutil.GatherAndCount(reg, name); err != nil || n == 0 {
+			t.Errorf("%s: count %d, err %v", name, n, err)
+		}
 	}
 	if got := testutil.ToFloat64(c.clusters); got != 2 {
 		t.Errorf("clusters = %v", got)
@@ -109,7 +115,7 @@ func TestClientRetries(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
 	}))
 	defer srv.Close()
-	got, err := NewClient(srv.URL, "k").Clusters(context.Background())
+	got, err := NewClient(srv.URL, "k", 10*time.Second, prometheus.NewRegistry()).Clusters(context.Background())
 	if err != nil || len(got) != 1 || calls != 3 {
 		t.Fatalf("got %v, err %v, calls %d", got, err, calls)
 	}

@@ -24,6 +24,7 @@ type Collector struct {
 	risksActive  *prometheus.GaugeVec
 	issuesOpen   *prometheus.GaugeVec
 	issuesClosed *prometheus.CounterVec
+	stepDuration *prometheus.HistogramVec
 	scrapeErrors prometheus.Counter
 	lastSuccess  prometheus.Gauge
 
@@ -44,10 +45,13 @@ func NewCollector(api *Client, interval time.Duration, reg prometheus.Registerer
 		issuesOpen:  f("issues_open", "Open issues by cluster and type (issues older than 2 days are not seen).", "cluster", "type"),
 		issuesClosed: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "komodor_issues_closed_total", Help: "Issues observed closing since the exporter started."}, []string{"cluster", "type"}),
+		stepDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "komodor_exporter_collection_step_duration_seconds", Help: "Duration of each collection step.",
+			Buckets: durationBuckets}, []string{"step"}),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "komodor_exporter_errors_total", Help: "Failed collection attempts."}),
 		lastSuccess:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_success_timestamp_seconds", Help: "Unix time of the last fully successful collection."}),
 	}
-	reg.MustRegister(c.clusters, c.risks, c.risksActive, c.issuesOpen, c.issuesClosed, c.scrapeErrors, c.lastSuccess)
+	reg.MustRegister(c.clusters, c.risks, c.risksActive, c.issuesOpen, c.issuesClosed, c.stepDuration, c.scrapeErrors, c.lastSuccess)
 	return c
 }
 
@@ -57,7 +61,10 @@ func (c *Collector) Run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		start := time.Now()
-		if err := c.collect(ctx); err != nil {
+		pollCtx, cancel := context.WithTimeout(ctx, c.interval)
+		err := c.collect(pollCtx)
+		cancel()
+		if err != nil {
 			c.scrapeErrors.Inc()
 			slog.Error("collection failed", "err", err, "duration", time.Since(start).String())
 		} else {
@@ -75,7 +82,9 @@ func (c *Collector) Run(ctx context.Context) {
 // collect fills fresh gauges and only swaps them in per family once that family fully succeeds,
 // so a failed poll keeps the previous values instead of reporting zeros.
 func (c *Collector) collect(ctx context.Context) error {
+	stepStart := time.Now()
 	clusters, err := c.api.Clusters(ctx)
+	c.stepDuration.WithLabelValues("clusters").Observe(time.Since(stepStart).Seconds())
 	if err != nil {
 		return fmt.Errorf("clusters: %w", err)
 	}
@@ -83,7 +92,11 @@ func (c *Collector) collect(ctx context.Context) error {
 	slog.Debug("collected clusters", "count", len(clusters))
 
 	var firstErr error
-	keep := func(name string, err error) {
+	step := func(name string, fn func(context.Context) error) {
+		start := time.Now()
+		err := fn(ctx)
+		c.stepDuration.WithLabelValues(name).Observe(time.Since(start).Seconds())
+		slog.Debug("collection step done", "step", name, "duration", time.Since(start).String())
 		if err != nil {
 			slog.Error("collect step failed", "step", name, "err", err)
 			if firstErr == nil {
@@ -91,9 +104,9 @@ func (c *Collector) collect(ctx context.Context) error {
 			}
 		}
 	}
-	keep("risk counts", c.collectRiskCounts(ctx))
-	keep("active risks", c.collectActiveRisks(ctx))
-	keep("issues", c.collectIssues(ctx, clusters))
+	step("risk_counts", c.collectRiskCounts)
+	step("active_risks", c.collectActiveRisks)
+	step("issues", func(ctx context.Context) error { return c.collectIssues(ctx, clusters) })
 	return firstErr
 }
 
