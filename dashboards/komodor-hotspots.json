@@ -5,7 +5,7 @@
     "komodor"
   ],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "time": {
     "from": "now-6h",
     "to": "now"
@@ -88,7 +88,9 @@
           "min": 0,
           "color": {
             "mode": "continuous-GrYlRd"
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -136,7 +138,9 @@
           "min": 0,
           "color": {
             "mode": "continuous-GrYlRd"
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -184,7 +188,9 @@
           "min": 0,
           "color": {
             "mode": "continuous-GrYlRd"
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -324,7 +330,9 @@
             },
             "align": "right"
           },
-          "min": 0
+          "min": 0,
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": [
           {
@@ -483,7 +491,8 @@
             "fillOpacity": 10,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },

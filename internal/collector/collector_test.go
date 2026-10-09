@@ -1,11 +1,14 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -486,5 +489,24 @@ func TestUnmatchedSkipsAreWarnedOnceNotFatal(t *testing.T) {
 	}
 	if !c.warnedSkips {
 		t.Error("the unmatched skip entry should have been checked")
+	}
+}
+
+func TestPollTimeoutSaysToRaiseThePollInterval(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"data":{"clusters":[]}}`))
+	}))
+	defer srv.Close()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	reg := prometheus.NewRegistry()
+	c := New(testClient(srv.URL, 2, 1, reg), 50*time.Millisecond, time.Hour, allEnabled(t), IssueFilter{}, reg)
+	c.poll(context.Background())
+	if !strings.Contains(buf.String(), "raise --poll-interval") {
+		t.Errorf("a poll cut off by its interval should say how to fix it; log: %s", buf.String())
 	}
 }

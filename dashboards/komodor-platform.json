@@ -5,7 +5,7 @@
     "komodor"
   ],
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "time": {
     "from": "now-3h",
     "to": "now"
@@ -92,7 +92,9 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -149,7 +151,9 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -206,7 +210,9 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -263,7 +269,9 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -316,7 +324,9 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "locale",
+          "decimals": 0
         },
         "overrides": []
       },
@@ -419,7 +429,8 @@
             "fillOpacity": 15,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -470,7 +481,8 @@
               "mode": "normal"
             },
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -518,7 +530,8 @@
             "fillOpacity": 15,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -566,7 +579,8 @@
             "fillOpacity": 15,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -617,7 +631,8 @@
               "mode": "normal"
             },
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -665,7 +680,8 @@
             "fillOpacity": 15,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -713,7 +729,8 @@
             "fillOpacity": 15,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -761,7 +778,8 @@
             "fillOpacity": 15,
             "lineWidth": 1,
             "spanNulls": true
-          }
+          },
+          "unit": "locale"
         },
         "overrides": []
       },
@@ -843,7 +861,10 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "locale",
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {

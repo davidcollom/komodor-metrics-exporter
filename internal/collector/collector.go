@@ -112,12 +112,17 @@ func (c *Collector) poll(ctx context.Context) {
 	start := time.Now()
 	pollCtx, cancel := context.WithTimeout(ctx, c.interval)
 	err := c.collect(pollCtx)
+	timedOut := pollCtx.Err() == context.DeadlineExceeded
 	cancel()
 	c.lastPoll.SetToCurrentTime()
 	if err != nil {
 		c.pollOK.Set(0)
 		c.scrapeErrors.Inc()
-		slog.Error("collection failed", "err", err, "duration", time.Since(start).String())
+		attrs := []any{"err", err, "duration", time.Since(start).String()}
+		if timedOut {
+			attrs = append(attrs, "hint", "the poll hit --poll-interval before it finished; raise --poll-interval or switch off slow metric groups")
+		}
+		slog.Error("collection failed", attrs...)
 		return
 	}
 	c.pollOK.Set(1)

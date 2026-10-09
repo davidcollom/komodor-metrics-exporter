@@ -7,7 +7,7 @@ services:
       dockerfile: demo/Dockerfile
     environment:
       KOMODOR_API_KEY: ${KOMODOR_API_KEY:?set KOMODOR_API_KEY}
-      KOMODOR_POLL_INTERVAL: 1m
+      KOMODOR_POLL_INTERVAL: ${KOMODOR_POLL_INTERVAL:-5m}
       KOMODOR_LOG_LEVEL: ${KOMODOR_LOG_LEVEL:-info}
       KOMODOR_SKIP_ISSUES: ${KOMODOR_SKIP_ISSUES:-}
     ports: ["9092:9090"]

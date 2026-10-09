@@ -113,7 +113,7 @@ helm install komodor-metrics-exporter deploy/helm/komodor-metrics-exporter \
 cd demo && KOMODOR_API_KEY=... docker compose up --build
 ```
 
-Grafana is at http://localhost:3000 (login `admin` / `demo`), Prometheus at http://localhost:9091 and the exporter's `/metrics` at http://localhost:9092/metrics. It polls every minute, so give the first poll a moment. Set `KOMODOR_SKIP_ISSUES=cluster/type` (see below) if one cluster's issues query fails and keeps the poll from counting as successful. Prometheus data is kept in a named volume, so `docker compose down` keeps it and `docker compose down -v` deletes it. To pick up exporter code changes without touching Prometheus or Grafana, run `docker compose up -d --build --no-deps exporter`.
+Grafana is at http://localhost:3000 (login `admin` / `demo`), Prometheus at http://localhost:9091 and the exporter's `/metrics` at http://localhost:9092/metrics. It polls every 5 minutes by default (`KOMODOR_POLL_INTERVAL` changes it, and an account with many clusters needs the longer interval: a poll that does not finish within the interval is cut off and counts as failed), so give the first poll a moment. Set `KOMODOR_SKIP_ISSUES=cluster/type` (see below) if one cluster's issues query fails and keeps the poll from counting as successful. Prometheus data is kept in a named volume, so `docker compose down` keeps it and `docker compose down -v` deletes it. To pick up exporter code changes without touching Prometheus or Grafana, run `docker compose up -d --build --no-deps exporter`.
 
 ## Grafana dashboards
 
