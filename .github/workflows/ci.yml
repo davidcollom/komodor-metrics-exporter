@@ -7,16 +7,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with: {go-version-file: go.mod}
       - run: go vet ./... && go test -race ./...
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with: {args: check}
   chart:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/deploy/helm/komodor-metrics-exporter:/apps" helmunittest/helm-unittest:4.3.0-1.2.1 .
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - run: helm lint deploy/helm/komodor-metrics-exporter --set apiKey=ci
