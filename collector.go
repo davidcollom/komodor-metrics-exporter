@@ -312,6 +312,9 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 			continue
 		}
 		cl, typ := pairs[i][0], pairs[i][1]
+		// Touching the counter creates its series at 0, so rate() and increase() have a baseline
+		// and dashboards show 0 instead of no data until the first issue closes.
+		c.issuesClosed.WithLabelValues(cl, typ)
 		open := 0
 		for _, iss := range is {
 			switch iss.Status {

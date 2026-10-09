@@ -77,6 +77,10 @@ func TestCollect(t *testing.T) {
 			t.Errorf("%s: count %d, err %v", name, n, err)
 		}
 	}
+	// Every cluster/type pair exposes a closed counter at 0 from the first poll (2 clusters x 5 types).
+	if n := testutil.CollectAndCount(c.issuesClosed); n != 10 {
+		t.Errorf("closed counter series = %d, want 10", n)
+	}
 	check := func(name string, got, want float64) {
 		t.Helper()
 		if got != want {
