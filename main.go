@@ -57,7 +57,7 @@ func newRootCmd() *cobra.Command {
 	f.String("api-url", "https://api.komodor.com", "Komodor API base URL")
 	f.Duration("request-timeout", 2*time.Minute, "timeout for each API request attempt; raise it for slow endpoints")
 	f.StringSlice("disable", nil, "metric groups to switch off: clusters, risks, risks_active, risks_by_check, issues (or set metrics.<group>: false in the config file)")
-	f.Int("max-retries", 4, "retries per request on 5xx (except 504), 429 and network errors; backoff is 1s, 2s, 4s, 8s, ...")
+	f.Int("max-retries", 2, "retries per request on 5xx (except 504), 429 and network errors; backoff is 1s, 2s, 4s, ...")
 	f.Int("concurrency", 8, "maximum concurrent API requests (cluster-scoped and issues calls)")
 	f.Int("slow-concurrency", 2, "maximum concurrent account-wide risk queries, which can take a minute or time out")
 	f.Duration("poll-interval", 5*time.Minute, "how often to poll the API (minimum 30s)")
