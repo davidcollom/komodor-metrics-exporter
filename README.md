@@ -15,12 +15,21 @@ Prometheus exporter for the [Komodor](https://komodor.com) public API. It polls 
 
 ## Configuration
 
-| Env var | Default | |
+Every setting is a flag, and also an environment variable with the `KOMODOR_` prefix (`--poll-interval` is `KOMODOR_POLL_INTERVAL`). Precedence: flag, then env, then `--config` file, then default. Run with `--help` for the list.
+
+| Flag | Default | |
 |---|---|---|
-| `KOMODOR_API_KEY` | required | Sent as `X-API-KEY` |
-| `KOMODOR_API_URL` | `https://api.komodor.com` | |
-| `KOMODOR_POLL_INTERVAL` | `5m` | Minimum `30s` |
-| `LISTEN_ADDR` | `:9090` | `/metrics`, `/healthz` |
+| `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
+| `--api-url` | `https://api.komodor.com` | |
+| `--poll-interval` | `5m` | Minimum `30s` |
+| `--listen-addr` | `:9090` | Serves `/metrics` and `/healthz` |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
+| `--log-format` | `json` | `json` or `text` |
+| `--config` | none | Optional yaml/json/toml file using the same keys, e.g. `poll-interval: 10m` |
+
+## Logging
+
+Structured logs (JSON by default) go to stderr. At `--log-level debug` every API attempt is logged with method, URL, status and duration, along with retry decisions and per-cluster issue counts. Request headers are never logged, so the API key stays out.
 
 ```sh
 docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metrics-exporter

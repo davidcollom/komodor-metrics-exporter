@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -25,8 +26,9 @@ func NewClient(baseURL, apiKey string) *Client {
 	rc.RetryMax = 4
 	rc.RetryWaitMin = 1 * time.Second
 	rc.RetryWaitMax = 15 * time.Second
-	rc.Logger = nil
+	rc.Logger = leveledLogger{}
 	rc.HTTPClient.Timeout = 30 * time.Second
+	rc.HTTPClient.Transport = loggingTransport{http.DefaultTransport}
 	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient()}
 }
 
@@ -62,6 +64,31 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, msg)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// leveledLogger routes retryablehttp's own logging (retry decisions) into slog.
+type leveledLogger struct{}
+
+// A failed attempt is retried, so it is only a warning here; the caller logs the final error.
+func (leveledLogger) Error(msg string, kv ...any) { slog.Warn(msg, kv...) }
+func (leveledLogger) Info(msg string, kv ...any)  { slog.Info(msg, kv...) }
+func (leveledLogger) Debug(msg string, kv ...any) { slog.Debug(msg, kv...) }
+func (leveledLogger) Warn(msg string, kv ...any)  { slog.Warn(msg, kv...) }
+
+// loggingTransport logs every attempt at debug; headers are never logged, so the API key stays out.
+type loggingTransport struct{ next http.RoundTripper }
+
+func (t loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.next.RoundTrip(req)
+	attrs := []any{"method", req.Method, "url", req.URL.String(), "duration", time.Since(start).String()}
+	switch {
+	case err != nil:
+		slog.Debug("api request failed", append(attrs, "err", err)...)
+	default:
+		slog.Debug("api request", append(attrs, "status", resp.StatusCode)...)
+	}
+	return resp, err
 }
 
 type Risk struct {

@@ -52,14 +52,17 @@ func NewCollector(api *Client, interval time.Duration, reg prometheus.Registerer
 }
 
 func (c *Collector) Run(ctx context.Context) {
+	slog.Info("collector started", "interval", c.interval.String())
 	t := time.NewTicker(c.interval)
 	defer t.Stop()
 	for {
+		start := time.Now()
 		if err := c.collect(ctx); err != nil {
 			c.scrapeErrors.Inc()
-			slog.Error("collection failed", "err", err)
+			slog.Error("collection failed", "err", err, "duration", time.Since(start).String())
 		} else {
 			c.lastSuccess.SetToCurrentTime()
+			slog.Info("collection complete", "duration", time.Since(start).String())
 		}
 		select {
 		case <-ctx.Done():
@@ -77,6 +80,7 @@ func (c *Collector) collect(ctx context.Context) error {
 		return fmt.Errorf("clusters: %w", err)
 	}
 	c.clusters.Set(float64(len(clusters)))
+	slog.Debug("collected clusters", "count", len(clusters))
 
 	var firstErr error
 	keep := func(name string, err error) {
@@ -126,6 +130,7 @@ func (c *Collector) collectActiveRisks(ctx context.Context) error {
 			counts[key{r.ClusterName, r.CheckType, r.Severity}]++
 		}
 	}
+	slog.Debug("collected active risks", "series", len(counts))
 	c.risksActive.Reset()
 	for k, n := range counts {
 		c.risksActive.WithLabelValues(k.cluster, k.check, k.sev).Set(n)
@@ -153,6 +158,7 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 				firstErr = fmt.Errorf("closed issues %s/%s: %w", cl, typ, err)
 				continue
 			}
+			slog.Debug("collected issues", "cluster", cl, "type", typ, "open", len(is), "closed", len(closed))
 			for _, i := range closed {
 				k := fmt.Sprintf("%s|%s|%d|%s", cl, typ, i.StartTime, i.Summary)
 				if _, dup := c.seenClosed[k]; dup {
