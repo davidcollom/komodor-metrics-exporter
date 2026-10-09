@@ -66,7 +66,7 @@ func TestCollect(t *testing.T) {
 	srv := fakeAPI(&closed)
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, allEnabled(t), reg)
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, allEnabled(t), IssueFilter{}, reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
@@ -166,7 +166,7 @@ func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "issues"})
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, reg)
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestIssuesFallBackPerStatus(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
 	api := NewClient(ClientOptions{BaseURL: srv.URL, APIKey: "k", Timeout: time.Second, Concurrency: 4, SlowConcurrency: 1}, reg)
-	c := NewCollector(api, time.Minute, time.Hour, enabled, reg)
+	c := NewCollector(api, time.Minute, time.Hour, enabled, IssueFilter{}, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatalf("closed-side failure should not fail the poll: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestIssueWindows(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
-	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, reg)
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, IssueFilter{}, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -320,5 +320,72 @@ func TestIssueWindows(t *testing.T) {
 	}
 	if d := now - from["open"]; d < 48*3600-10 || d > 48*3600+10 {
 		t.Errorf("open window = %ds, want ~48h", d)
+	}
+}
+
+func TestIssueFilter(t *testing.T) {
+	f, err := NewIssueFilter(nil, []string{"homelab/node-issue", "*/pvc-issue", "legacy/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	has := func(ps [][2]string, cl, typ string) bool { return slices.Contains(ps, [2]string{cl, typ}) }
+	ps := f.Pairs([]string{"homelab", "prod", "legacy"})
+	for cl, typ := range map[string]string{"homelab": "node-issue", "prod": "pvc-issue", "legacy": "availability"} {
+		if has(ps, cl, typ) {
+			t.Errorf("%s/%s should be skipped", cl, typ)
+		}
+	}
+	if !has(ps, "homelab", "availability") || !has(ps, "prod", "node-issue") || len(ps) != 7 {
+		t.Errorf("unexpected pairs: %v", ps)
+	}
+	if got := f.UnmatchedSkips([]string{"prod"}); !slices.Equal(got, []string{"homelab/node-issue", "legacy/*"}) {
+		t.Errorf("unmatched = %v", got)
+	}
+
+	sel, _ := NewIssueFilter([]string{"availability"}, nil)
+	if got := sel.Pairs([]string{"a", "b"}); len(got) != 2 {
+		t.Errorf("select pairs = %v", got)
+	}
+	for _, bad := range [][]string{{"nope"}, {"homelab"}, {"/node-issue"}, {"homelab/bogus"}} {
+		if _, err := NewIssueFilter(nil, bad); err == nil {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+	if _, err := NewIssueFilter([]string{"bogus"}, nil); err == nil {
+		t.Error("accepted unknown type")
+	}
+}
+
+func TestSkippedPairsAreNotQueried(t *testing.T) {
+	var queried sync.Map
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/clusters" {
+			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"homelab"}]}}`))
+			return
+		}
+		var b struct {
+			Props struct{ Type string }
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		queried.Store(b.Props.Type, true)
+		if b.Props.Type == "node-issue" {
+			http.Error(w, "broken", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"issues":[]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
+	f, _ := NewIssueFilter(nil, []string{"homelab/node-issue"})
+	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, f, reg)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatalf("poll should succeed with the broken pair skipped: %v", err)
+	}
+	if _, called := queried.Load("node-issue"); called {
+		t.Error("skipped pair was queried")
+	}
+	if _, called := queried.Load("availability"); !called {
+		t.Error("other pairs were not queried")
 	}
 }

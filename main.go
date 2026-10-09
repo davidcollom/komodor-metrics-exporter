@@ -58,6 +58,8 @@ func newRootCmd() *cobra.Command {
 	f.Duration("request-timeout", 2*time.Minute, "timeout for each API request attempt; raise it for slow endpoints")
 	f.StringSlice("disable", nil, "metric groups to switch off: clusters, risks, risks_active, risks_by_check, issues (or set metrics.<group>: false in the config file)")
 	f.Duration("issues-window", time.Hour, "how far back to look for closed issues (max 48h); open issues always use the full 48h")
+	f.StringSlice("skip-issues", nil, "cluster/type pairs to skip when querying issues, e.g. homelab/node-issue; either side may be * (or skip-issues: [..] in the config file)")
+	f.StringSlice("issue-types", nil, "only query these issue types (default all): "+strings.Join(IssueTypes, ", "))
 	f.Int("max-retries", 2, "retries per request on 5xx (except 504), 429 and network errors; backoff is 1s, 2s, 4s, ...")
 	f.Int("concurrency", 8, "maximum concurrent API requests (cluster-scoped and issues calls)")
 	f.Int("slow-concurrency", 2, "maximum concurrent account-wide risk queries, which can take a minute or time out")
@@ -113,16 +115,11 @@ func run(parent context.Context, v *viper.Viper) error {
 	for name := range v.GetStringMap("metrics") {
 		cfg[name] = v.GetBool("metrics." + name)
 	}
-	// Viper splits an env string on whitespace only, so a comma list from KOMODOR_DISABLE needs its own split.
-	var disabled []string
-	for _, item := range v.GetStringSlice("disable") {
-		for _, name := range strings.Split(item, ",") {
-			if name = strings.TrimSpace(name); name != "" {
-				disabled = append(disabled, name)
-			}
-		}
+	enabled, err := ParseEnabled(cfg, splitList(v, "disable"))
+	if err != nil {
+		return err
 	}
-	enabled, err := ParseEnabled(cfg, disabled)
+	issueFilter, err := NewIssueFilter(splitList(v, "issue-types"), splitList(v, "skip-issues"))
 	if err != nil {
 		return err
 	}
@@ -132,7 +129,7 @@ func run(parent context.Context, v *viper.Viper) error {
 	col := NewCollector(NewClient(ClientOptions{
 		BaseURL: v.GetString("api-url"), APIKey: key, Timeout: v.GetDuration("request-timeout"),
 		Concurrency: v.GetInt("concurrency"), SlowConcurrency: v.GetInt("slow-concurrency"), MaxRetries: v.GetInt("max-retries"),
-	}, reg), interval, window, enabled, reg)
+	}, reg), interval, window, enabled, issueFilter, reg)
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -149,10 +146,24 @@ func run(parent context.Context, v *viper.Viper) error {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String(), "concurrency", v.GetInt("concurrency"), "slow_concurrency", v.GetInt("slow-concurrency"), "issues_window", window.String())
+	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String(), "concurrency", v.GetInt("concurrency"), "slow_concurrency", v.GetInt("slow-concurrency"), "issues_window", window.String(), "issue_types", splitList(v, "issue-types"), "skip_issues", splitList(v, "skip-issues"))
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	slog.Info("stopped")
 	return nil
+}
+
+// splitList reads a list setting. Viper splits an env string on whitespace only, so a comma-separated
+// KOMODOR_* value needs its own split; flags and config-file lists pass through unchanged.
+func splitList(v *viper.Viper, key string) []string {
+	var out []string
+	for _, item := range v.GetStringSlice(key) {
+		for _, s := range strings.Split(item, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
 }

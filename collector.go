@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +63,8 @@ type Collector struct {
 	enabled  map[string]bool
 
 	closedWindow time.Duration
+	filter       IssueFilter
+	warnedSkips  bool
 
 	clusters     prometheus.Gauge
 	risks        *prometheus.GaugeVec
@@ -77,12 +81,12 @@ type Collector struct {
 	firstIssues bool
 }
 
-func NewCollector(api *Client, interval, closedWindow time.Duration, enabled map[string]bool, reg prometheus.Registerer) *Collector {
+func NewCollector(api *Client, interval, closedWindow time.Duration, enabled map[string]bool, filter IssueFilter, reg prometheus.Registerer) *Collector {
 	f := func(name, help string, labels ...string) *prometheus.GaugeVec {
 		return prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "komodor_" + name, Help: help}, labels)
 	}
 	c := &Collector{
-		api: api, interval: interval, closedWindow: closedWindow, enabled: enabled, seenClosed: map[string]time.Time{}, firstIssues: true,
+		api: api, interval: interval, closedWindow: closedWindow, enabled: enabled, filter: filter, seenClosed: map[string]time.Time{}, firstIssues: true,
 		clusters:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_clusters", Help: "Clusters connected to Komodor."}),
 		risks:        f("reliability_risks", "Reliability risks by status and severity.", "status", "severity"),
 		risksActive:  f("reliability_risks_active", "Open and confirmed reliability risks by cluster and severity.", "cluster", "severity"),
@@ -266,11 +270,17 @@ func (c *Collector) collectRisksByCheck(ctx context.Context) error {
 // previous value rather than failing the whole step, because one flaky cluster should not blank the rest.
 func (c *Collector) collectIssues(ctx context.Context, clusters []string) error {
 	now := time.Now()
-	nt := len(IssueTypes)
-	results := make([][]Issue, len(clusters)*nt)
-	errs := make([]error, len(results))
-	_ = fanout(len(results), func(i int) error {
-		cl, typ := clusters[i/nt], IssueTypes[i%nt]
+	pairs := c.filter.Pairs(clusters)
+	if !c.warnedSkips {
+		c.warnedSkips = true
+		for _, s := range c.filter.UnmatchedSkips(clusters) {
+			slog.Warn("skip-issues entry matches no cluster", "entry", s)
+		}
+	}
+	results := make([][]Issue, len(pairs))
+	errs := make([]error, len(pairs))
+	_ = fanout(len(pairs), func(i int) error {
+		cl, typ := pairs[i][0], pairs[i][1]
 		is, err := c.fetchIssues(ctx, cl, typ, now)
 		if err != nil {
 			errs[i] = fmt.Errorf("issues %s/%s: %w", cl, typ, err)
@@ -288,7 +298,7 @@ func (c *Collector) collectIssues(ctx context.Context, clusters []string) error 
 		if errs[i] != nil {
 			continue
 		}
-		cl, typ := clusters[i/nt], IssueTypes[i%nt]
+		cl, typ := pairs[i][0], pairs[i][1]
 		open := 0
 		for _, iss := range is {
 			switch iss.Status {
@@ -333,4 +343,67 @@ func (c *Collector) fetchIssues(ctx context.Context, cluster, typ string, now ti
 		return open, nil
 	}
 	return append(open, closed...), nil
+}
+
+// IssueFilter selects which cluster and issue-type pairs are queried. The issues API can fail for a
+// single pair (a server-side 500), so a known-bad pair can be skipped instead of failing every poll.
+type IssueFilter struct {
+	types []string
+	skips []skip
+}
+
+type skip struct{ raw, cluster, typ string }
+
+// NewIssueFilter takes issue types to select (empty means all) and skip entries of the form
+// cluster/type, where either side may be "*".
+func NewIssueFilter(types, skips []string) (IssueFilter, error) {
+	f := IssueFilter{types: types}
+	for _, t := range types {
+		if !slices.Contains(IssueTypes, t) {
+			return f, fmt.Errorf("unknown issue type %q, want one of %v", t, IssueTypes)
+		}
+	}
+	for _, s := range skips {
+		i := strings.LastIndex(s, "/")
+		if i <= 0 || i == len(s)-1 {
+			return f, fmt.Errorf("invalid skip-issues entry %q, want cluster/type (either may be *)", s)
+		}
+		sk := skip{raw: s, cluster: s[:i], typ: s[i+1:]}
+		if sk.typ != "*" && !slices.Contains(IssueTypes, sk.typ) {
+			return f, fmt.Errorf("invalid skip-issues entry %q: unknown issue type %q, want one of %v or *", s, sk.typ, IssueTypes)
+		}
+		f.skips = append(f.skips, sk)
+	}
+	return f, nil
+}
+
+func (s skip) matches(cluster, typ string) bool {
+	return (s.cluster == "*" || s.cluster == cluster) && (s.typ == "*" || s.typ == typ)
+}
+
+func (f IssueFilter) Pairs(clusters []string) [][2]string {
+	types := f.types
+	if len(types) == 0 {
+		types = IssueTypes
+	}
+	var out [][2]string
+	for _, cl := range clusters {
+		for _, t := range types {
+			if !slices.ContainsFunc(f.skips, func(s skip) bool { return s.matches(cl, t) }) {
+				out = append(out, [2]string{cl, t})
+			}
+		}
+	}
+	return out
+}
+
+// UnmatchedSkips returns entries naming a cluster that does not exist, which is almost always a typo.
+func (f IssueFilter) UnmatchedSkips(clusters []string) []string {
+	var out []string
+	for _, s := range f.skips {
+		if s.cluster != "*" && !slices.Contains(clusters, s.cluster) {
+			out = append(out, s.raw)
+		}
+	}
+	return out
 }

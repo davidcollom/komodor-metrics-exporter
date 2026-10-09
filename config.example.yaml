@@ -13,3 +13,8 @@ metrics:
   risks_active: true    # komodor_reliability_risks_active{cluster,severity}
   risks_by_check: true  # komodor_reliability_risks_by_check{check_type}
   issues: true          # komodor_issues_open, komodor_issues_closed_total
+
+# Issue queries can be narrowed. skip-issues takes cluster/type pairs (either side may be *),
+# useful when the API fails for one pair. issue-types selects which types are queried at all.
+# skip-issues: [homelab/node-issue, "*/workflow-issue"]
+# issue-types: [availability, failed-deploy]

@@ -25,6 +25,8 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
 | `--disable` | none | Metric groups to switch off, comma-separated (`KOMODOR_DISABLE`) |
+| `--skip-issues` | none | `cluster/type` pairs not to query for issues, comma-separated (`KOMODOR_SKIP_ISSUES`) or a list in the config file. Either side may be `*` |
+| `--issue-types` | all | Only query these issue types: `availability`, `failed-deploy`, `node-issue`, `pvc-issue`, `workflow-issue` |
 | `--max-retries` | `2` | Retries per request on 5xx (not 504), 429 and network errors, with exponential, jittered backoff (1s, 2s, 4s, ... up to 15s) |
 | `--issues-window` | `1h` | How far back to look for closed issues (at least 2x the poll interval, max 48h). Open issues always use 48h |
 | `--concurrency` | `8` | Maximum concurrent cluster-scoped and issues requests |
@@ -53,6 +55,19 @@ All metric groups are on by default. Each is a toggle named after its metric fam
 | `issues` | `komodor_issues_open`, `komodor_issues_closed_total` |
 
 Switch groups off in the config file (see [`config.example.yaml`](config.example.yaml)), or with `--disable issues,risks_by_check` / `KOMODOR_DISABLE=issues,risks_by_check`. A disabled group makes no API calls and its series are not exposed, so disabling `issues` removes the most expensive calls. The cluster list is still fetched if `risks_active` or `issues` is on. Exporter health metrics are always exposed, and an unknown group name is rejected at startup. Switch every group off and the exporter makes no API calls.
+
+## Skipping broken issue queries
+
+The issues API can return a persistent 500 for a single cluster and type (for example `homelab/node-issue`), which would otherwise fail every poll and raise `komodor_exporter_errors_total`. Skip the pair and the rest is unaffected:
+
+```yaml
+skip-issues:
+  - homelab/node-issue
+  - "*/workflow-issue"   # every cluster
+  - legacy/*             # every type on one cluster
+```
+
+The same list works as `--skip-issues homelab/node-issue,legacy/*` or `KOMODOR_SKIP_ISSUES`. Entries are validated at startup, and one naming a cluster that does not exist is logged as a warning.
 
 ## Logging
 
