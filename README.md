@@ -122,6 +122,10 @@ Import the JSON files in [`dashboards/`](dashboards) into Grafana and pick your 
 - **Komodor Platform Metrics** ([`komodor-platform.json`](dashboards/komodor-platform.json)): an overview. A multi-select **Cluster** variable (default All) filters the per-cluster panels: active risks, risks by severity, open and closed issues, and a per-cluster breakdown table. Panels labelled "all clusters" (risks by status and by check type) are not per-cluster metrics, so the variable does not filter them. Exporter freshness and the last poll result are in the top row. Gaps in the lines are connected.
 - **Komodor Hotspots** ([`komodor-hotspots.json`](dashboards/komodor-hotspots.json)): which clusters need attention. Top-N bars (set **Top N**) for the most active risks, high-severity risks and open issues, a heat table with one row per cluster and a column per severity and issue type (darker red means more, sorted by high-severity risks), and a heatmap and chart of how risk and open issues change over time per cluster.
 
+![Komodor Hotspots dashboard](docs/hotspots-dashboard.png)
+
+_The Hotspots dashboard, shown with made-up data from a mock API (the cluster names are invented)._
+
 ## Limits
 
 - Closed issues are only seen within `--issues-window` (default 1h), so one that closes after being open for longer than that may be missed if the API filters on start time rather than end time; raise the window if you see gaps. The issues API only looks back 2 days per query and returns no issue ID. Issues open for more than 2 days are not counted in `komodor_issues_open`, and closed issues are deduplicated on cluster, type, start time and summary, so `komodor_issues_closed_total` is approximate. Closed issues present at startup are not counted.

@@ -5,7 +5,7 @@
     "komodor"
   ],
   "schemaVersion": 39,
-  "version": 3,
+  "version": 5,
   "time": {
     "from": "now-6h",
     "to": "now"
@@ -68,7 +68,7 @@
         "x": 0,
         "y": 0,
         "w": 8,
-        "h": 8
+        "h": 11
       },
       "targets": [
         {
@@ -118,7 +118,7 @@
         "x": 8,
         "y": 0,
         "w": 8,
-        "h": 8
+        "h": 11
       },
       "targets": [
         {
@@ -168,7 +168,7 @@
         "x": 16,
         "y": 0,
         "w": 8,
-        "h": 8
+        "h": 11
       },
       "targets": [
         {
@@ -216,7 +216,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 11,
         "w": 24,
         "h": 12
       },
@@ -408,7 +408,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 23,
         "w": 24,
         "h": 10
       },
@@ -419,7 +419,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "topk($top, sum by (cluster) (komodor_reliability_risks_active))",
+          "expr": "sum by (cluster) (komodor_reliability_risks_active) and on(cluster) topk($top, max_over_time(sum by (cluster) (komodor_reliability_risks_active)[$__range:5m]))",
           "legendFormat": "{{cluster}}"
         }
       ],
@@ -470,9 +470,9 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 33,
         "w": 24,
-        "h": 8
+        "h": 10
       },
       "targets": [
         {
@@ -481,7 +481,7 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "topk($top, sum by (cluster) (komodor_issues_open))",
+          "expr": "sum by (cluster) (komodor_issues_open) and on(cluster) topk($top, max_over_time(sum by (cluster) (komodor_issues_open)[$__range:5m]))",
           "legendFormat": "{{cluster}}"
         }
       ],
