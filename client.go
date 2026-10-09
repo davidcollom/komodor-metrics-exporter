@@ -23,10 +23,9 @@ type Client struct {
 	baseURL string
 	apiKey  string
 	http    *http.Client
-	sem     chan struct{}
 }
 
-func NewClient(baseURL, apiKey string, timeout time.Duration, concurrency int, reg prometheus.Registerer) *Client {
+func NewClient(baseURL, apiKey string, timeout time.Duration, concurrency, slowConcurrency int, reg prometheus.Registerer) *Client {
 	hist := prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "komodor_exporter_api_request_duration_seconds", Help: "Duration of each Komodor API attempt (retries counted separately).",
 		Buckets: durationBuckets}, []string{"endpoint", "code"})
@@ -36,19 +35,16 @@ func NewClient(baseURL, apiKey string, timeout time.Duration, concurrency int, r
 	rc.RetryWaitMin = 1 * time.Second
 	rc.RetryWaitMax = 15 * time.Second
 	rc.Logger = leveledLogger{}
+	rc.CheckRetry = retryPolicy
 	rc.HTTPClient.Timeout = timeout
-	rc.HTTPClient.Transport = loggingTransport{http.DefaultTransport, hist}
-	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient(), sem: make(chan struct{}, max(concurrency, 1))}
+	rc.HTTPClient.Transport = loggingTransport{
+		next: http.DefaultTransport, hist: hist,
+		sem: make(chan struct{}, max(concurrency, 1)), slowSem: make(chan struct{}, max(slowConcurrency, 1)),
+	}
+	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient()}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body, out any) error {
-	// One limit for the whole client, so concurrent steps cannot together exceed it.
-	select {
-	case c.sem <- struct{}{}:
-		defer func() { <-c.sem }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 	var rd io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -92,16 +88,42 @@ func (leveledLogger) Debug(msg string, kv ...any) { slog.Debug(msg, kv...) }
 func (leveledLogger) Warn(msg string, kv ...any)  { slog.Warn(msg, kv...) }
 
 // loggingTransport logs every attempt at debug; headers are never logged, so the API key stays out.
+// retryPolicy is the library default minus 504: the gateway gives up after about 60s, so a retry
+// would just hold another slot for another minute on a query that is too heavy.
+func retryPolicy(ctx context.Context, resp *http.Response, err error) (bool, error) {
+	if resp != nil && resp.StatusCode == http.StatusGatewayTimeout {
+		return false, nil
+	}
+	return retryablehttp.DefaultRetryPolicy(ctx, resp, err)
+}
+
+type slowKey struct{}
+
+// loggingTransport also enforces the in-flight limits. The limit is taken per attempt, not per call,
+// so a request sleeping in retry backoff does not hold a slot. Account-wide risk queries are slow
+// and use their own small pool so they cannot starve the fast cluster-scoped calls.
 type loggingTransport struct {
-	next http.RoundTripper
-	hist *prometheus.HistogramVec
+	next         http.RoundTripper
+	hist         *prometheus.HistogramVec
+	sem, slowSem chan struct{}
 }
 
 func (t loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	sem := t.sem
+	if slow, _ := req.Context().Value(slowKey{}).(bool); slow {
+		sem = t.slowSem
+	}
+	queued := time.Now()
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
 	start := time.Now()
 	resp, err := t.next.RoundTrip(req)
 	elapsed := time.Since(start)
-	attrs := []any{"method", req.Method, "url", req.URL.String(), "duration", elapsed.String()}
+	attrs := []any{"method", req.Method, "url", req.URL.String(), "duration", elapsed.String(), "queued", start.Sub(queued).String()}
 	code := "error"
 	if err != nil {
 		slog.Debug("api request failed", append(attrs, "err", err)...)
@@ -122,6 +144,9 @@ type RiskFilter struct {
 
 // RiskCount reads totalResults from a one-row page, so no risk rows are transferred or paged.
 func (c *Client) RiskCount(ctx context.Context, f RiskFilter) (int, error) {
+	if f.Cluster == "" {
+		ctx = context.WithValue(ctx, slowKey{}, true)
+	}
 	q := url.Values{}
 	q.Set("pageSize", "1")
 	q.Set("offset", "0")

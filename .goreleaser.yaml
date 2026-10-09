@@ -19,5 +19,10 @@ dockers_v2:
     platforms: [linux/amd64, linux/arm64]
 
 changelog:
+  sort: asc
+  groups:
+    - {title: Features, regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$', order: 0}
+    - {title: Fixes, regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$', order: 1}
+    - {title: Other, order: 999}
   filters:
-    exclude: ["^docs:", "^test:", "^chore:"]
+    exclude: ["^docs:", "^test:", "^chore:", "^ci:"]

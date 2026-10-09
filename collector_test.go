@@ -58,7 +58,7 @@ func TestCollect(t *testing.T) {
 	srv := fakeAPI(&closed)
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, reg), time.Minute, allEnabled(t), reg)
+	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, 2, reg), time.Minute, allEnabled(t), reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
@@ -101,7 +101,7 @@ func TestClientRetries(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
 	}))
 	defer srv.Close()
-	got, err := NewClient(srv.URL, "k", 10*time.Second, 1, prometheus.NewRegistry()).Clusters(context.Background())
+	got, err := NewClient(srv.URL, "k", 10*time.Second, 1, 1, prometheus.NewRegistry()).Clusters(context.Background())
 	if err != nil || len(got) != 1 || calls != 3 {
 		t.Fatalf("got %v, err %v, calls %d", got, err, calls)
 	}
@@ -118,8 +118,8 @@ func TestConcurrencyLimit(t *testing.T) {
 		_, _ = w.Write([]byte(`{"totalResults":1}`))
 	}))
 	defer srv.Close()
-	c := NewClient(srv.URL, "k", 10*time.Second, 3, prometheus.NewRegistry())
-	if err := fanout(12, func(int) error { _, err := c.RiskCount(context.Background(), RiskFilter{}); return err }); err != nil {
+	c := NewClient(srv.URL, "k", 10*time.Second, 3, 1, prometheus.NewRegistry())
+	if err := fanout(12, func(int) error { _, err := c.RiskCount(context.Background(), RiskFilter{Cluster: "c1"}); return err }); err != nil {
 		t.Fatal(err)
 	}
 	if p := peak.Load(); p < 2 || p > 3 {
@@ -158,7 +158,7 @@ func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "issues"})
-	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, reg), time.Minute, enabled, reg)
+	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, 2, reg), time.Minute, enabled, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -175,5 +175,51 @@ func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
 		if n := mf.GetName(); n == "komodor_clusters" || n == "komodor_issues_open" || n == "komodor_reliability_risks_active" {
 			t.Errorf("%s exposed although disabled", n)
 		}
+	}
+}
+
+func TestGatewayTimeoutIsNotRetried(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "timeout", http.StatusGatewayTimeout)
+	}))
+	defer srv.Close()
+	if _, err := NewClient(srv.URL, "k", 10*time.Second, 2, 1, prometheus.NewRegistry()).RiskCount(context.Background(), RiskFilter{}); err == nil {
+		t.Fatal("want error")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("calls = %d, want 1", n)
+	}
+}
+
+func TestSlowQueriesUseTheirOwnPool(t *testing.T) {
+	var slowNow, slowPeak, fastDone atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("clusterName") == "" {
+			n := slowNow.Add(1)
+			defer slowNow.Add(-1)
+			for p := slowPeak.Load(); n > p && !slowPeak.CompareAndSwap(p, n); p = slowPeak.Load() {
+			}
+			time.Sleep(150 * time.Millisecond)
+		} else {
+			fastDone.Add(1)
+		}
+		_, _ = w.Write([]byte(`{"totalResults":1}`))
+	}))
+	defer srv.Close()
+	c := NewClient(srv.URL, "k", 10*time.Second, 4, 1, prometheus.NewRegistry())
+	err := fanout(8, func(i int) error {
+		_, err := c.RiskCount(context.Background(), RiskFilter{Cluster: map[bool]string{true: "c1"}[i%2 == 0]})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := slowPeak.Load(); p != 1 {
+		t.Fatalf("account-wide peak in-flight = %d, want 1", p)
+	}
+	if fastDone.Load() != 4 {
+		t.Fatalf("fast calls = %d, want 4", fastDone.Load())
 	}
 }

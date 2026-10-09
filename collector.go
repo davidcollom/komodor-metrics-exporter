@@ -206,54 +206,57 @@ func (c *Collector) collect(ctx context.Context) error {
 	})
 }
 
-func (c *Collector) collectRiskCounts(ctx context.Context) error {
-	n := len(riskStatuses) * len(riskSeverities)
-	counts := make([]int, n)
-	err := fanout(n, func(i int) (err error) {
-		counts[i], err = c.api.RiskCount(ctx, RiskFilter{
-			Statuses: []string{riskStatuses[i/len(riskSeverities)]}, Severity: riskSeverities[i%len(riskSeverities)]})
-		return err
+// counts runs one count query per item. A failed item is reported in errs and left out of the publish,
+// so one slow or failing query keeps its previous value instead of blanking the whole group.
+func counts(n int, fn func(i int) (int, error)) (vals []int, errs []error) {
+	vals, errs = make([]int, n), make([]error, n)
+	_ = fanout(n, func(i int) error {
+		vals[i], errs[i] = fn(i)
+		return nil
 	})
-	if err != nil {
-		return err
+	return vals, errs
+}
+
+func (c *Collector) collectRiskCounts(ctx context.Context) error {
+	ns := len(riskSeverities)
+	vals, errs := counts(len(riskStatuses)*ns, func(i int) (int, error) {
+		return c.api.RiskCount(ctx, RiskFilter{Statuses: []string{riskStatuses[i/ns]}, Severity: riskSeverities[i%ns]})
+	})
+	for i, v := range vals {
+		if errs[i] == nil {
+			c.risks.WithLabelValues(riskStatuses[i/ns], riskSeverities[i%ns]).Set(float64(v))
+		}
 	}
-	for i, v := range counts {
-		c.risks.WithLabelValues(riskStatuses[i/len(riskSeverities)], riskSeverities[i%len(riskSeverities)]).Set(float64(v))
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (c *Collector) collectActiveRisks(ctx context.Context, clusters []string) error {
-	n := len(clusters) * len(riskSeverities)
-	counts := make([]int, n)
-	err := fanout(n, func(i int) (err error) {
-		counts[i], err = c.api.RiskCount(ctx, RiskFilter{
-			Statuses: activeStatuses, Cluster: clusters[i/len(riskSeverities)], Severity: riskSeverities[i%len(riskSeverities)]})
-		return err
+	ns := len(riskSeverities)
+	vals, errs := counts(len(clusters)*ns, func(i int) (int, error) {
+		return c.api.RiskCount(ctx, RiskFilter{Statuses: activeStatuses, Cluster: clusters[i/ns], Severity: riskSeverities[i%ns]})
 	})
-	if err != nil {
-		return err
+	failed := errors.Join(errs...)
+	if failed == nil {
+		c.risksActive.Reset()
 	}
-	c.risksActive.Reset()
-	for i, v := range counts {
-		c.risksActive.WithLabelValues(clusters[i/len(riskSeverities)], riskSeverities[i%len(riskSeverities)]).Set(float64(v))
+	for i, v := range vals {
+		if errs[i] == nil {
+			c.risksActive.WithLabelValues(clusters[i/ns], riskSeverities[i%ns]).Set(float64(v))
+		}
 	}
-	return nil
+	return failed
 }
 
 func (c *Collector) collectRisksByCheck(ctx context.Context) error {
-	counts := make([]int, len(CheckTypes))
-	err := fanout(len(CheckTypes), func(i int) (err error) {
-		counts[i], err = c.api.RiskCount(ctx, RiskFilter{Statuses: activeStatuses, CheckType: CheckTypes[i]})
-		return err
+	vals, errs := counts(len(CheckTypes), func(i int) (int, error) {
+		return c.api.RiskCount(ctx, RiskFilter{Statuses: activeStatuses, CheckType: CheckTypes[i]})
 	})
-	if err != nil {
-		return err
+	for i, v := range vals {
+		if errs[i] == nil {
+			c.risksByCheck.WithLabelValues(CheckTypes[i]).Set(float64(v))
+		}
 	}
-	for i, v := range counts {
-		c.risksByCheck.WithLabelValues(CheckTypes[i]).Set(float64(v))
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // collectIssues makes one call per cluster and type (open and closed together). A failed pair keeps its

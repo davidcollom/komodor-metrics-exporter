@@ -57,7 +57,8 @@ func newRootCmd() *cobra.Command {
 	f.String("api-url", "https://api.komodor.com", "Komodor API base URL")
 	f.Duration("request-timeout", 2*time.Minute, "timeout for each API request attempt; raise it for slow endpoints")
 	f.StringSlice("disable", nil, "metric groups to switch off: clusters, risks, risks_active, risks_by_check, issues (or set metrics.<group>: false in the config file)")
-	f.Int("concurrency", 8, "maximum concurrent API requests")
+	f.Int("concurrency", 8, "maximum concurrent API requests (cluster-scoped and issues calls)")
+	f.Int("slow-concurrency", 2, "maximum concurrent account-wide risk queries, which can take a minute or time out")
 	f.Duration("poll-interval", 5*time.Minute, "how often to poll the API (minimum 30s)")
 	f.String("listen-addr", ":9090", "address serving /metrics and /healthz")
 	f.String("log-level", "info", "debug, info, warn or error; debug logs every API request")
@@ -121,7 +122,7 @@ func run(parent context.Context, v *viper.Viper) error {
 
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-	col := NewCollector(NewClient(v.GetString("api-url"), key, v.GetDuration("request-timeout"), v.GetInt("concurrency"), reg), interval, enabled, reg)
+	col := NewCollector(NewClient(v.GetString("api-url"), key, v.GetDuration("request-timeout"), v.GetInt("concurrency"), v.GetInt("slow-concurrency"), reg), interval, enabled, reg)
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -138,7 +139,7 @@ func run(parent context.Context, v *viper.Viper) error {
 		_ = srv.Shutdown(shutdown)
 	}()
 
-	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String(), "concurrency", v.GetInt("concurrency"))
+	slog.Info("starting", "version", version, "addr", srv.Addr, "api_url", v.GetString("api-url"), "poll_interval", interval.String(), "request_timeout", v.GetDuration("request-timeout").String(), "concurrency", v.GetInt("concurrency"), "slow_concurrency", v.GetInt("slow-concurrency"))
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

@@ -25,13 +25,18 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
 | `--disable` | none | Metric groups to switch off, comma-separated (`KOMODOR_DISABLE`) |
-| `--concurrency` | `8` | Maximum concurrent API requests across all steps |
+| `--concurrency` | `8` | Maximum concurrent cluster-scoped and issues requests |
+| `--slow-concurrency` | `2` | Maximum concurrent account-wide risk queries (a separate pool, see below) |
 | `--poll-interval` | `5m` | Minimum `30s`. A poll is cancelled if it runs longer than this |
 | `--request-timeout` | `2m` | Timeout per API attempt; raise it for slow endpoints |
 | `--listen-addr` | `:9090` | Serves `/metrics` and `/healthz` |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `json` | `json` or `text` |
 | `--config` | none | Optional yaml/json/toml file using the same keys, e.g. `poll-interval: 10m` |
+
+## Concurrency and slow queries
+
+In-flight requests are limited per attempt, not per call, so a request waiting in retry backoff does not hold a slot. Account-wide risk queries (no cluster filter: `risks` and `risks_by_check`) can take a minute or hit a gateway timeout on large accounts, so they use their own small pool (`--slow-concurrency`) and cannot starve the fast per-cluster calls. Up to `--concurrency` + `--slow-concurrency` requests can therefore be in flight at once. 5xx responses and network errors are retried with backoff, but a 504 is not, since the retry would just wait out the same timeout. A query that still fails keeps its previous value and the rest of its group is published.
 
 ## Choosing metrics
 
