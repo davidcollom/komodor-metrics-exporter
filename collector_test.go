@@ -98,3 +98,19 @@ func TestCollect(t *testing.T) {
 		t.Errorf("closed after third poll = %v, want 1", got)
 	}
 }
+
+func TestClientRetries(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls++; calls < 3 {
+			http.Error(w, "busy", http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"c1"}]}}`))
+	}))
+	defer srv.Close()
+	got, err := NewClient(srv.URL, "k").Clusters(context.Background())
+	if err != nil || len(got) != 1 || calls != 3 {
+		t.Fatalf("got %v, err %v, calls %d", got, err, calls)
+	}
+}

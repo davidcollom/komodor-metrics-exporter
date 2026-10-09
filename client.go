@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/hashicorp/go-retryablehttp"
 )
 
 type Client struct {
@@ -19,7 +21,13 @@ type Client struct {
 }
 
 func NewClient(baseURL, apiKey string) *Client {
-	return &Client{baseURL: baseURL, apiKey: apiKey, http: &http.Client{Timeout: 30 * time.Second}}
+	rc := retryablehttp.NewClient()
+	rc.RetryMax = 4
+	rc.RetryWaitMin = 1 * time.Second
+	rc.RetryWaitMax = 15 * time.Second
+	rc.Logger = nil
+	rc.HTTPClient.Timeout = 30 * time.Second
+	return &Client{baseURL: baseURL, apiKey: apiKey, http: rc.StandardClient()}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body, out any) error {
