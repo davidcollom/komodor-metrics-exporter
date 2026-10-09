@@ -82,7 +82,7 @@ docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metri
 Released versions are published as an OCI chart (the chart version matches the release tag, without the `v`):
 
 ```sh
-helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --version 0.1.4 --set apiKey=...
+helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --version 0.1.6 --set apiKey=...
 ```
 
 The chart source is in [`deploy/helm/komodor-metrics-exporter`](deploy/helm/komodor-metrics-exporter). It takes the API key as a Secret and the exporter configuration as a ConfigMap, mounted and passed with `--config`:
@@ -135,7 +135,7 @@ _Both screenshots show made-up data from a mock API; the cluster names are inven
 ## Limits
 
 - Closed issues are only seen within `--issues-window` (default 1h), so one that closes after being open for longer than that may be missed if the API filters on start time rather than end time; raise the window if you see gaps. The issues API only looks back 2 days per query and returns no issue ID. Issues open for more than 2 days are not counted in `komodor_issues_open`, and closed issues are deduplicated on cluster, type, start time and summary, so `komodor_issues_closed_total` is approximate. Closed issues present at startup are not counted.
-- Risk metrics come from `totalResults` on one-row pages, so no risks are paged. Issues have no total, so they are paged per cluster and type (one call covers open and closed), and API calls per poll grow with cluster count. Steps run concurrently, capped by `--concurrency`.
+- Risk metrics come from `totalResults` on one-row pages, so no risks are paged. Issues have no total, so they are paged per cluster and type (two calls per pair: open issues over the last 48 h, closed issues over `--issues-window`), and API calls per poll grow with cluster count. Steps run concurrently, capped by `--concurrency`.
 - Failed API calls are retried up to 4 times with backoff (429 and 5xx), so a briefly rate-limited poll usually still completes.
 - History starts when the exporter does; nothing is backfilled.
 
