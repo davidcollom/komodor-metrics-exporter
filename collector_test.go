@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func TestCollect(t *testing.T) {
 	srv := fakeAPI(&closed)
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
-	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, reg), time.Minute, reg)
+	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, reg), time.Minute, allEnabled(t), reg)
 	ctx := context.Background()
 
 	if err := c.collect(ctx); err != nil {
@@ -123,5 +124,56 @@ func TestConcurrencyLimit(t *testing.T) {
 	}
 	if p := peak.Load(); p < 2 || p > 3 {
 		t.Fatalf("peak in-flight = %d, want 2..3", p)
+	}
+}
+
+func allEnabled(t *testing.T) map[string]bool {
+	t.Helper()
+	e, err := ParseEnabled(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func TestParseEnabled(t *testing.T) {
+	e, err := ParseEnabled(map[string]bool{"issues": false}, []string{"risks"})
+	if err != nil || e["issues"] || e["risks"] || !e["clusters"] || !e["risks_active"] || !e["risks_by_check"] {
+		t.Fatalf("got %v, err %v", e, err)
+	}
+	if _, err := ParseEnabled(map[string]bool{"nope": true}, nil); err == nil {
+		t.Fatal("unknown config group accepted")
+	}
+	if _, err := ParseEnabled(nil, []string{"nope"}); err == nil {
+		t.Fatal("unknown disabled group accepted")
+	}
+}
+
+func TestDisabledGroupsAreNotCalledOrExposed(t *testing.T) {
+	var paths sync.Map
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths.Store(r.URL.Path, true)
+		_, _ = w.Write([]byte(`{"totalResults":1,"data":{"clusters":[{"name":"c1"}],"issues":[]}}`))
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	enabled, _ := ParseEnabled(nil, []string{"clusters", "risks_active", "issues"})
+	c := NewCollector(NewClient(srv.URL, "k", 10*time.Second, 4, reg), time.Minute, enabled, reg)
+	if err := c.collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/api/v2/clusters", "/api/v2/clusters/issues/search"} {
+		if _, called := paths.Load(p); called {
+			t.Errorf("%s called although its groups are disabled", p)
+		}
+	}
+	if _, called := paths.Load("/api/v2/health/risks"); !called {
+		t.Error("risks endpoint not called")
+	}
+	mfs, _ := reg.Gather()
+	for _, mf := range mfs {
+		if n := mf.GetName(); n == "komodor_clusters" || n == "komodor_issues_open" || n == "komodor_reliability_risks_active" {
+			t.Errorf("%s exposed although disabled", n)
+		}
 	}
 }

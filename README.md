@@ -13,7 +13,7 @@ Prometheus exporter for the [Komodor](https://komodor.com) public API. It polls 
 | `komodor_issues_open` | `cluster`, `type` | See limits below |
 | `komodor_issues_closed_total` | `cluster`, `type` | Counter of issues seen closing since start |
 | `komodor_exporter_api_request_duration_seconds` | `endpoint`, `code` | Histogram per API attempt, buckets 0.1s to 300s |
-| `komodor_exporter_collection_step_duration_seconds` | `step` | Histogram per collection step (`clusters`, `risk_counts`, `active_risks`, `issues`) |
+| `komodor_exporter_collection_step_duration_seconds` | `step` | Histogram per collection step (`clusters`, `risks`, `risks_active`, `risks_by_check`, `issues`) |
 | `komodor_exporter_errors_total`, `komodor_exporter_last_success_timestamp_seconds` | | Exporter health |
 
 ## Configuration
@@ -24,6 +24,7 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 |---|---|---|
 | `--api-key` | required | Sent as `X-API-KEY`. Prefer `KOMODOR_API_KEY`; flags show up in process listings |
 | `--api-url` | `https://api.komodor.com` | |
+| `--disable` | none | Metric groups to switch off, comma-separated (`KOMODOR_DISABLE`) |
 | `--concurrency` | `8` | Maximum concurrent API requests across all steps |
 | `--poll-interval` | `5m` | Minimum `30s`. A poll is cancelled if it runs longer than this |
 | `--request-timeout` | `2m` | Timeout per API attempt; raise it for slow endpoints |
@@ -31,6 +32,20 @@ Every setting is a flag, and also an environment variable with the `KOMODOR_` pr
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error` |
 | `--log-format` | `json` | `json` or `text` |
 | `--config` | none | Optional yaml/json/toml file using the same keys, e.g. `poll-interval: 10m` |
+
+## Choosing metrics
+
+All metric groups are on by default. Each is a toggle named after its metric family:
+
+| Group | Metrics |
+|---|---|
+| `clusters` | `komodor_clusters` |
+| `risks` | `komodor_reliability_risks` |
+| `risks_active` | `komodor_reliability_risks_active` |
+| `risks_by_check` | `komodor_reliability_risks_by_check` |
+| `issues` | `komodor_issues_open`, `komodor_issues_closed_total` |
+
+Switch groups off in the config file (see [`config.example.yaml`](config.example.yaml)), or with `--disable issues,risks_by_check` / `KOMODOR_DISABLE=issues,risks_by_check`. A disabled group makes no API calls and its series are not exposed, so disabling `issues` removes the most expensive calls. The cluster list is still fetched if `risks_active` or `issues` is on. Exporter health metrics are always exposed, and an unknown group name is rejected at startup. Switch every group off and the exporter makes no API calls.
 
 ## Logging
 

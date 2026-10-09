@@ -17,9 +17,47 @@ var riskSeverities = []string{"high", "medium", "low"}
 // The issues API caps a query at a 2 day window, 7 days back.
 const issueWindow = 48 * time.Hour
 
+// Each name is both a config toggle and a collection step label.
+const (
+	MetricClusters     = "clusters"
+	MetricRisks        = "risks"
+	MetricRisksActive  = "risks_active"
+	MetricRisksByCheck = "risks_by_check"
+	MetricIssues       = "issues"
+)
+
+var MetricNames = []string{MetricClusters, MetricRisks, MetricRisksActive, MetricRisksByCheck, MetricIssues}
+
+// ParseEnabled starts with everything on, applies explicit config values, then the disabled list.
+func ParseEnabled(cfg map[string]bool, disabled []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, n := range MetricNames {
+		out[n] = true
+	}
+	set := func(name string, on bool) error {
+		if _, ok := out[name]; !ok {
+			return fmt.Errorf("unknown metric group %q, want one of %v", name, MetricNames)
+		}
+		out[name] = on
+		return nil
+	}
+	for n, on := range cfg {
+		if err := set(n, on); err != nil {
+			return nil, err
+		}
+	}
+	for _, n := range disabled {
+		if err := set(n, false); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 type Collector struct {
 	api      *Client
 	interval time.Duration
+	enabled  map[string]bool
 
 	clusters     prometheus.Gauge
 	risks        *prometheus.GaugeVec
@@ -36,12 +74,12 @@ type Collector struct {
 	firstIssues bool
 }
 
-func NewCollector(api *Client, interval time.Duration, reg prometheus.Registerer) *Collector {
+func NewCollector(api *Client, interval time.Duration, enabled map[string]bool, reg prometheus.Registerer) *Collector {
 	f := func(name, help string, labels ...string) *prometheus.GaugeVec {
 		return prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "komodor_" + name, Help: help}, labels)
 	}
 	c := &Collector{
-		api: api, interval: interval, seenClosed: map[string]time.Time{}, firstIssues: true,
+		api: api, interval: interval, enabled: enabled, seenClosed: map[string]time.Time{}, firstIssues: true,
 		clusters:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_clusters", Help: "Clusters connected to Komodor."}),
 		risks:        f("reliability_risks", "Reliability risks by status and severity.", "status", "severity"),
 		risksActive:  f("reliability_risks_active", "Open and confirmed reliability risks by cluster and severity.", "cluster", "severity"),
@@ -55,7 +93,27 @@ func NewCollector(api *Client, interval time.Duration, reg prometheus.Registerer
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "komodor_exporter_errors_total", Help: "Failed collection attempts."}),
 		lastSuccess:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_success_timestamp_seconds", Help: "Unix time of the last fully successful collection."}),
 	}
-	reg.MustRegister(c.clusters, c.risks, c.risksActive, c.risksByCheck, c.issuesOpen, c.issuesClosed, c.stepDuration, c.scrapeErrors, c.lastSuccess)
+	// Disabled groups are never registered, so their series do not appear in /metrics at all.
+	reg.MustRegister(c.stepDuration, c.scrapeErrors, c.lastSuccess)
+	groups := map[string][]prometheus.Collector{
+		MetricClusters:     {c.clusters},
+		MetricRisks:        {c.risks},
+		MetricRisksActive:  {c.risksActive},
+		MetricRisksByCheck: {c.risksByCheck},
+		MetricIssues:       {c.issuesOpen, c.issuesClosed},
+	}
+	var on []string
+	for _, n := range MetricNames {
+		if enabled[n] {
+			reg.MustRegister(groups[n]...)
+			on = append(on, n)
+		}
+	}
+	if len(on) == 0 {
+		slog.Warn("all metric groups are disabled; the exporter will not call the Komodor API")
+	} else {
+		slog.Info("metric groups enabled", "groups", on)
+	}
 	return c
 }
 
@@ -103,23 +161,37 @@ func fanout(n int, fn func(i int) error) error {
 // collect runs the independent steps concurrently once the cluster list is known. A step publishes
 // only when it fully succeeds, so a failed step keeps its previous values instead of reporting zeros.
 func (c *Collector) collect(ctx context.Context) error {
-	stepStart := time.Now()
-	clusters, err := c.api.Clusters(ctx)
-	c.stepDuration.WithLabelValues("clusters").Observe(time.Since(stepStart).Seconds())
-	if err != nil {
-		return fmt.Errorf("clusters: %w", err)
+	// The cluster list is a dependency of other groups, so it is fetched if any of them needs it.
+	var clusters []string
+	if c.enabled[MetricClusters] || c.enabled[MetricRisksActive] || c.enabled[MetricIssues] {
+		stepStart := time.Now()
+		var err error
+		clusters, err = c.api.Clusters(ctx)
+		c.stepDuration.WithLabelValues(MetricClusters).Observe(time.Since(stepStart).Seconds())
+		if err != nil {
+			return fmt.Errorf("clusters: %w", err)
+		}
+		if c.enabled[MetricClusters] {
+			c.clusters.Set(float64(len(clusters)))
+		}
+		slog.Debug("collected clusters", "count", len(clusters))
 	}
-	c.clusters.Set(float64(len(clusters)))
-	slog.Debug("collected clusters", "count", len(clusters))
 
-	steps := []struct {
+	type step struct {
 		name string
 		fn   func(context.Context) error
-	}{
-		{"risk_counts", c.collectRiskCounts},
-		{"active_risks", func(ctx context.Context) error { return c.collectActiveRisks(ctx, clusters) }},
-		{"risks_by_check", c.collectRisksByCheck},
-		{"issues", func(ctx context.Context) error { return c.collectIssues(ctx, clusters) }},
+	}
+	all := []step{
+		{MetricRisks, c.collectRiskCounts},
+		{MetricRisksActive, func(ctx context.Context) error { return c.collectActiveRisks(ctx, clusters) }},
+		{MetricRisksByCheck, c.collectRisksByCheck},
+		{MetricIssues, func(ctx context.Context) error { return c.collectIssues(ctx, clusters) }},
+	}
+	var steps []step
+	for _, s := range all {
+		if c.enabled[s.name] {
+			steps = append(steps, s)
+		}
 	}
 	return fanout(len(steps), func(i int) error {
 		s := steps[i]

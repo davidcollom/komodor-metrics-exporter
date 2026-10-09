@@ -1,0 +1,15 @@
+# Every setting can also be a flag or a KOMODOR_* env var; those override this file.
+poll-interval: 5m
+request-timeout: 2m
+concurrency: 8
+log-level: info
+log-format: json
+
+# Every metric group is on by default. Set one to false to stop collecting it:
+# its API calls are skipped and its series are not exposed.
+metrics:
+  clusters: true        # komodor_clusters
+  risks: true           # komodor_reliability_risks{status,severity}
+  risks_active: true    # komodor_reliability_risks_active{cluster,severity}
+  risks_by_check: true  # komodor_reliability_risks_by_check{check_type}
+  issues: true          # komodor_issues_open, komodor_issues_closed_total
