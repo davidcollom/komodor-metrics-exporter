@@ -16,5 +16,5 @@ metrics:
 
 # Issue queries can be narrowed. skip-issues takes cluster/type pairs (either side may be *),
 # useful when the API fails for one pair. issue-types selects which types are queried at all.
-# skip-issues: [homelab/node-issue, "*/workflow-issue"]
+# skip-issues: [my-cluster/node-issue, "*/workflow-issue"]
 # issue-types: [availability, failed-deploy]

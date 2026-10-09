@@ -58,16 +58,16 @@ Switch groups off in the config file (see [`config.example.yaml`](config.example
 
 ## Skipping broken issue queries
 
-The issues API can return a persistent 500 for a single cluster and type (for example `homelab/node-issue`), which would otherwise fail every poll and raise `komodor_exporter_errors_total`. Skip the pair and the rest is unaffected:
+The issues API can return a persistent 500 for a single cluster and type (for example `my-cluster/node-issue`), which would otherwise fail every poll and raise `komodor_exporter_errors_total`. Skip the pair and the rest is unaffected:
 
 ```yaml
 skip-issues:
-  - homelab/node-issue
+  - my-cluster/node-issue
   - "*/workflow-issue"   # every cluster
   - legacy/*             # every type on one cluster
 ```
 
-The same list works as `--skip-issues homelab/node-issue,legacy/*` or `KOMODOR_SKIP_ISSUES`. Entries are validated at startup, and one naming a cluster that does not exist is logged as a warning.
+The same list works as `--skip-issues my-cluster/node-issue,legacy/*` or `KOMODOR_SKIP_ISSUES`. Entries are validated at startup, and one naming a cluster that does not exist is logged as a warning.
 
 ## Logging
 
@@ -85,7 +85,7 @@ docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metri
 cd demo && KOMODOR_API_KEY=... docker compose up --build
 ```
 
-Grafana is at http://localhost:3000 (no login), Prometheus at http://localhost:9091 and the exporter's `/metrics` at http://localhost:9092/metrics. It polls every minute, so give the first poll a moment. `docker compose down -v` removes it.
+Grafana is at http://localhost:3000 (no login), Prometheus at http://localhost:9091 and the exporter's `/metrics` at http://localhost:9092/metrics. It polls every minute, so give the first poll a moment. Set `KOMODOR_SKIP_ISSUES=cluster/type` (see below) if one cluster's issues query fails and keeps the poll from counting as successful. `docker compose down -v` removes it.
 
 ## Grafana dashboard
 

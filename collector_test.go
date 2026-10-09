@@ -324,21 +324,21 @@ func TestIssueWindows(t *testing.T) {
 }
 
 func TestIssueFilter(t *testing.T) {
-	f, err := NewIssueFilter(nil, []string{"homelab/node-issue", "*/pvc-issue", "legacy/*"})
+	f, err := NewIssueFilter(nil, []string{"cluster-a/node-issue", "*/pvc-issue", "legacy/*"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	has := func(ps [][2]string, cl, typ string) bool { return slices.Contains(ps, [2]string{cl, typ}) }
-	ps := f.Pairs([]string{"homelab", "prod", "legacy"})
-	for cl, typ := range map[string]string{"homelab": "node-issue", "prod": "pvc-issue", "legacy": "availability"} {
+	ps := f.Pairs([]string{"cluster-a", "prod", "legacy"})
+	for cl, typ := range map[string]string{"cluster-a": "node-issue", "prod": "pvc-issue", "legacy": "availability"} {
 		if has(ps, cl, typ) {
 			t.Errorf("%s/%s should be skipped", cl, typ)
 		}
 	}
-	if !has(ps, "homelab", "availability") || !has(ps, "prod", "node-issue") || len(ps) != 7 {
+	if !has(ps, "cluster-a", "availability") || !has(ps, "prod", "node-issue") || len(ps) != 7 {
 		t.Errorf("unexpected pairs: %v", ps)
 	}
-	if got := f.UnmatchedSkips([]string{"prod"}); !slices.Equal(got, []string{"homelab/node-issue", "legacy/*"}) {
+	if got := f.UnmatchedSkips([]string{"prod"}); !slices.Equal(got, []string{"cluster-a/node-issue", "legacy/*"}) {
 		t.Errorf("unmatched = %v", got)
 	}
 
@@ -346,7 +346,7 @@ func TestIssueFilter(t *testing.T) {
 	if got := sel.Pairs([]string{"a", "b"}); len(got) != 2 {
 		t.Errorf("select pairs = %v", got)
 	}
-	for _, bad := range [][]string{{"nope"}, {"homelab"}, {"/node-issue"}, {"homelab/bogus"}} {
+	for _, bad := range [][]string{{"nope"}, {"cluster-a"}, {"/node-issue"}, {"cluster-a/bogus"}} {
 		if _, err := NewIssueFilter(nil, bad); err == nil {
 			t.Errorf("accepted %v", bad)
 		}
@@ -360,7 +360,7 @@ func TestSkippedPairsAreNotQueried(t *testing.T) {
 	var queried sync.Map
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v2/clusters" {
-			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"homelab"}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"clusters":[{"name":"cluster-a"}]}}`))
 			return
 		}
 		var b struct {
@@ -377,7 +377,7 @@ func TestSkippedPairsAreNotQueried(t *testing.T) {
 	defer srv.Close()
 	reg := prometheus.NewRegistry()
 	enabled, _ := ParseEnabled(nil, []string{"risks", "risks_active", "risks_by_check"})
-	f, _ := NewIssueFilter(nil, []string{"homelab/node-issue"})
+	f, _ := NewIssueFilter(nil, []string{"cluster-a/node-issue"})
 	c := NewCollector(testClient(srv.URL, 4, 2, reg), time.Minute, time.Hour, enabled, f, reg)
 	if err := c.collect(context.Background()); err != nil {
 		t.Fatalf("poll should succeed with the broken pair skipped: %v", err)

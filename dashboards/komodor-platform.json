@@ -7,7 +7,7 @@
   "schemaVersion": 39,
   "version": 1,
   "time": {
-    "from": "now-7d",
+    "from": "now-3h",
     "to": "now"
   },
   "refresh": "5m",
@@ -46,7 +46,9 @@
           },
           "refId": "A",
           "expr": "komodor_clusters",
-          "legendFormat": ""
+          "legendFormat": "",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
@@ -97,7 +99,9 @@
           },
           "refId": "A",
           "expr": "sum(komodor_reliability_risks{status=\"open\"})",
-          "legendFormat": ""
+          "legendFormat": "",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
@@ -152,7 +156,9 @@
           },
           "refId": "A",
           "expr": "komodor_reliability_risks{status=\"open\",severity=\"high\"}",
-          "legendFormat": ""
+          "legendFormat": "",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
@@ -207,7 +213,9 @@
           },
           "refId": "A",
           "expr": "sum(komodor_issues_open)",
-          "legendFormat": ""
+          "legendFormat": "",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
@@ -261,8 +269,10 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "sum(increase(komodor_issues_closed_total[$__range]))",
-          "legendFormat": ""
+          "expr": "sum(increase(komodor_issues_closed_total[$__range])) or vector(0)",
+          "legendFormat": "",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
@@ -312,8 +322,10 @@
             "uid": "${datasource}"
           },
           "refId": "A",
-          "expr": "time() - komodor_exporter_last_success_timestamp_seconds",
-          "legendFormat": ""
+          "expr": "(time() - komodor_exporter_last_success_timestamp_seconds) and komodor_exporter_last_success_timestamp_seconds > 0",
+          "legendFormat": "",
+          "instant": true,
+          "range": false
         }
       ],
       "fieldConfig": {
