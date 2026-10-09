@@ -75,6 +75,8 @@ type Collector struct {
 	stepDuration *prometheus.HistogramVec
 	scrapeErrors prometheus.Counter
 	lastSuccess  prometheus.Gauge
+	lastPoll     prometheus.Gauge
+	pollOK       prometheus.Gauge
 
 	// The API gives issues no ID, so closed issues are deduped on this key.
 	seenClosed  map[string]time.Time
@@ -98,10 +100,12 @@ func NewCollector(api *Client, interval, closedWindow time.Duration, enabled map
 			Name: "komodor_exporter_collection_step_duration_seconds", Help: "Duration of each collection step.",
 			Buckets: durationBuckets}, []string{"step"}),
 		scrapeErrors: prometheus.NewCounter(prometheus.CounterOpts{Name: "komodor_exporter_errors_total", Help: "Failed collection attempts."}),
+		lastPoll:     prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_poll_timestamp_seconds", Help: "Unix time the last poll finished, successful or not."}),
+		pollOK:       prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_poll_success", Help: "1 if the last poll fully succeeded, 0 if any part failed."}),
 		lastSuccess:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "komodor_exporter_last_success_timestamp_seconds", Help: "Unix time of the last fully successful collection."}),
 	}
 	// Disabled groups are never registered, so their series do not appear in /metrics at all.
-	reg.MustRegister(c.stepDuration, c.scrapeErrors, c.lastSuccess)
+	reg.MustRegister(c.stepDuration, c.scrapeErrors, c.lastSuccess, c.lastPoll, c.pollOK)
 	groups := map[string][]prometheus.Collector{
 		MetricClusters:     {c.clusters},
 		MetricRisks:        {c.risks},
@@ -129,23 +133,32 @@ func (c *Collector) Run(ctx context.Context) {
 	t := time.NewTicker(c.interval)
 	defer t.Stop()
 	for {
-		start := time.Now()
-		pollCtx, cancel := context.WithTimeout(ctx, c.interval)
-		err := c.collect(pollCtx)
-		cancel()
-		if err != nil {
-			c.scrapeErrors.Inc()
-			slog.Error("collection failed", "err", err, "duration", time.Since(start).String())
-		} else {
-			c.lastSuccess.SetToCurrentTime()
-			slog.Info("collection complete", "duration", time.Since(start).String())
-		}
+		c.poll(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
 	}
+}
+
+// poll runs one collection bounded by the poll interval. last_poll records that a poll finished at all,
+// so freshness stays meaningful when one persistent failure stops last_success from ever being set.
+func (c *Collector) poll(ctx context.Context) {
+	start := time.Now()
+	pollCtx, cancel := context.WithTimeout(ctx, c.interval)
+	err := c.collect(pollCtx)
+	cancel()
+	c.lastPoll.SetToCurrentTime()
+	if err != nil {
+		c.pollOK.Set(0)
+		c.scrapeErrors.Inc()
+		slog.Error("collection failed", "err", err, "duration", time.Since(start).String())
+		return
+	}
+	c.pollOK.Set(1)
+	c.lastSuccess.SetToCurrentTime()
+	slog.Info("collection complete", "duration", time.Since(start).String())
 }
 
 var activeStatuses = []string{"open", "confirmed"}

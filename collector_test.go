@@ -389,3 +389,22 @@ func TestSkippedPairsAreNotQueried(t *testing.T) {
 		t.Error("other pairs were not queried")
 	}
 }
+
+func TestPollRecordsFreshnessEvenWhenItFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	reg := prometheus.NewRegistry()
+	c := NewCollector(testClient(srv.URL, 2, 1, reg), time.Minute, time.Hour, allEnabled(t), IssueFilter{}, reg)
+	c.poll(context.Background())
+	if got := testutil.ToFloat64(c.lastPoll); time.Since(time.Unix(int64(got), 0)) > time.Minute || got == 0 {
+		t.Errorf("last_poll = %v, want a recent timestamp", got)
+	}
+	if got := testutil.ToFloat64(c.pollOK); got != 0 {
+		t.Errorf("last_poll_success = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(c.lastSuccess); got != 0 {
+		t.Errorf("last_success = %v, want 0 after only failures", got)
+	}
+}

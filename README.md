@@ -14,7 +14,7 @@ Prometheus exporter for the [Komodor](https://komodor.com) public API. It polls 
 | `komodor_issues_closed_total` | `cluster`, `type` | Counter of issues seen closing since start |
 | `komodor_exporter_api_request_duration_seconds` | `endpoint`, `code` | Histogram per API attempt, buckets 0.1s to 300s |
 | `komodor_exporter_collection_step_duration_seconds` | `step` | Histogram per collection step (`clusters`, `risks`, `risks_active`, `risks_by_check`, `issues`) |
-| `komodor_exporter_errors_total`, `komodor_exporter_last_success_timestamp_seconds` | | Exporter health |
+| `komodor_exporter_last_poll_timestamp_seconds`, `komodor_exporter_last_poll_success`, `komodor_exporter_last_success_timestamp_seconds`, `komodor_exporter_errors_total` | | Exporter health: when the last poll finished, whether it fully succeeded, when one last fully succeeded (0 until the first full success), and a failure counter |
 
 ## Configuration
 
