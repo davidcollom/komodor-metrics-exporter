@@ -18,6 +18,13 @@ dockers_v2:
     tags: ["{{.Version}}", latest]
     platforms: [linux/amd64, linux/arm64]
 
+release:
+  footer: |
+    ## Install
+    Image: `ghcr.io/davidcollom/komodor-metrics-exporter:{{ .Version }}`
+
+    Helm chart: `helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --version {{ .Version }} --set apiKey=...`
+
 changelog:
   sort: asc
   groups:

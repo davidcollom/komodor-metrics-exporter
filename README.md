@@ -79,7 +79,13 @@ docker run -e KOMODOR_API_KEY=... -p 9090:9090 ghcr.io/davidcollom/komodor-metri
 
 ## Deploy with Helm
 
-The chart is in [`deploy/helm/komodor-metrics-exporter`](deploy/helm/komodor-metrics-exporter). It takes the API key as a Secret and the exporter configuration as a ConfigMap, mounted and passed with `--config`:
+Released versions are published as an OCI chart (the chart version matches the release tag, without the `v`):
+
+```sh
+helm install komodor-metrics-exporter oci://ghcr.io/davidcollom/charts/komodor-metrics-exporter --version 0.1.3 --set apiKey=...
+```
+
+The chart source is in [`deploy/helm/komodor-metrics-exporter`](deploy/helm/komodor-metrics-exporter). It takes the API key as a Secret and the exporter configuration as a ConfigMap, mounted and passed with `--config`:
 
 ```sh
 helm install komodor-metrics-exporter deploy/helm/komodor-metrics-exporter \
